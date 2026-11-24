@@ -1,12 +1,14 @@
-"""Simulación didáctica de espectros IR, UV-Vis y EI-MS a partir de una estructura (RDKit).
+"""Educational simulation of IR, UV-Vis and EI-MS spectra from a structure (RDKit).
 
-Los modelos son empíricos:
-  * IR  – tabla de frecuencias de grupo (SMARTS) + bandas C–H según hibridación, suma de lorentzianas.
-  * UV  – sistemas conjugados (nº de enlaces π, anillos aromáticos fusionados, auxocromos),
-          reglas tipo Woodward-Fieser simplificadas, bandas gaussianas en energía.
-  * MS  – ionización electrónica 70 eV: ion molecular con patrón isotópico exacto y fragmentos
-          por reglas de estabilidad (ruptura α, bencílica/tropilio, McLafferty, pérdidas neutras).
-Sirven para enseñar e interpretar, no sustituyen a cálculos cuánticos ni a bibliotecas espectrales.
+The models are empirical:
+  * IR  - group-frequency table (SMARTS) + C-H bands by hybridisation, sum of Lorentzians.
+  * UV  - conjugated systems (number of pi bonds, fused aromatic rings, auxochromes),
+          simplified Woodward-Fieser-type rules, Gaussian bands on an energy scale.
+  * MS  - 70 eV electron ionisation: molecular ion with exact isotope pattern and fragments
+          from stability rules (alpha-cleavage, benzylic/tropylium, McLafferty, neutral losses).
+They are meant for teaching spectral interpretation; they do not replace quantum-chemical
+calculations or spectral libraries. Peak labels are generated in Spanish and translated by
+`spectra.i18n.label`.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors
 
 # ---------------------------------------------------------------------------
-# Isótopos: símbolo -> [(masa nominal, masa exacta, abundancia)]
+# Isotopes: symbol -> [(nominal mass, exact mass, abundance)]
 # ---------------------------------------------------------------------------
 ISOTOPES = {
     "H": [(1, 1.007825, 0.99988), (2, 2.014102, 0.00012)],
@@ -83,7 +85,7 @@ def isotope_pattern(c: Counter, max_peaks: int = 6) -> list[tuple[int, float]]:
 # ---------------------------------------------------------------------------
 # IR
 # ---------------------------------------------------------------------------
-# (SMARTS, grupo, [(centro cm-1, semiancho, intensidad 0-1, asignación)])
+# (SMARTS, group, [(centre cm-1, half width, intensity 0-1, assignment)])
 IR_RULES = [
     ("[OX2H][CX4,c]", "Alcohol / fenol", [(3350, 120, .85, "ν O–H (puente de H)"), (1060, 25, .75, "ν C–O")]),
     ("[CX3](=O)[OX2H1]", "Ácido carboxílico", [(3000, 300, .75, "ν O–H ácido (muy ancha)"), (1710, 18, 1, "ν C=O ácido"), (1290, 25, .6, "ν C–O"), (930, 30, .35, "δ O–H f.p.")]),
@@ -186,7 +188,7 @@ def simulate_ir(mol: Chem.Mol) -> IRResult:
             cc = c - 25 if conj_co and lab.startswith("ν C=O") and "amida" not in lab else c
             add(cc, w, i * min(1.25, 1 + .1 * (len(hits) - 1)), lab + (" (conjugado)" if cc != c else ""))
 
-    # Huella dactilar: bandas de esqueleto deterministas (semilla = SMILES canónico)
+    # Fingerprint region: deterministic skeletal bands (seed = canonical SMILES)
     seed = int(hashlib.md5(Chem.MolToSmiles(mol).encode()).hexdigest()[:8], 16)
     rng = np.random.default_rng(seed)
     for _ in range(min(10, 2 + mol.GetNumHeavyAtoms() // 2)):
@@ -207,14 +209,14 @@ def simulate_ir(mol: Chem.Mol) -> IRResult:
 @dataclass
 class UVResult:
     x: np.ndarray  # nm
-    y: np.ndarray  # ε (L mol-1 cm-1)
+    y: np.ndarray  # epsilon (L mol-1 cm-1)
     bands: list
     lambda_max: float
     color: str
 
 
 def _conjugated_systems(mol):
-    """Componentes conexas de átomos con enlaces π (incluye aromáticos)."""
+    """Connected components of atoms carrying pi bonds (aromatic atoms included)."""
     pi = {a.GetIdx() for a in mol.GetAtoms() if a.GetIsAromatic() or any(b.GetBondTypeAsDouble() >= 2 for b in a.GetBonds())}
     seen, systems = set(), []
     ri = mol.GetRingInfo()
@@ -273,7 +275,7 @@ def simulate_uv(mol: Chem.Mol) -> UVResult:
         n_eff = s["npi"] + s["aux"]
         if s["aro_rings"]:
             f = min(s["aro_rings"], 4)
-            extra = max(0.0, s["npi"] - (3 * f - (f - 1)))  # π fuera de los anillos fusionados
+            extra = max(0.0, s["npi"] - (3 * f - (f - 1)))  # pi bonds outside the fused rings
             lB = [254, 286, 375, 440][f - 1] + 22 * extra + 12 * s["aux"]
             lE = [204, 221, 252, 275][f - 1] + 25 * extra + 8 * s["aux"]
             epsB = (250 if f == 1 else 5000) * (1 + 3 * min(1.0, extra + s["aux"] / 2))
@@ -303,7 +305,7 @@ def simulate_uv(mol: Chem.Mol) -> UVResult:
         y += e * np.exp(-.5 * ((nu - 1e7 / l) / 2600) ** 2)
     candidates = [b for b in bands if b[0] >= 200]
     lmax = max(candidates, key=lambda b: b[1])[0] if candidates else bands[0][0]
-    # color percibido (luz blanca transmitida)
+    # perceived colour (transmitted white light)
     vis = (x >= 400) & (x <= 700)
     T = 10 ** (-2 * y[vis] / max(y.max(), 3000))
     base = np.array([_wl_rgb(l) for l in x[vis]]).T
@@ -317,7 +319,7 @@ def simulate_uv(mol: Chem.Mol) -> UVResult:
 # ---------------------------------------------------------------------------
 @dataclass
 class MSResult:
-    peaks: list  # (m/z, intensidad rel., etiqueta)
+    peaks: list  # (m/z, relative intensity, label)
     M: int
     molecular_ion: list
 
@@ -369,7 +371,7 @@ def simulate_ms(mol: Chem.Mol) -> MSResult:
         if b.GetBondType() != Chem.BondType.SINGLE or b.IsInRing():
             continue
         A, B = b.GetBeginAtom(), b.GetEndAtom()
-        for X, Y in ((A, B), (B, A)):  # la carga queda en el fragmento de X
+        for X, Y in ((A, B), (B, A)):  # the charge stays on X's fragment
             side = _side(mol, X.GetIdx(), b.GetIdx())
             fc = formula_counts(mol, side)
             mz = nominal_mass(fc)
@@ -392,7 +394,7 @@ def simulate_ms(mol: Chem.Mol) -> MSResult:
                     s, lab = s + 1.0, "catión alílico"
                 else:
                     lab = ["", "carbocatión primario", "carbocatión secundario", "carbocatión terciario"][min(deg, 3)]
-            s *= .6 + .4 * min(1, lost / 43)  # regla de Stevenson: se pierde el radical mayor
+            s *= .6 + .4 * min(1, lost / 43)  # Stevenson's rule: the larger radical is lost
             if len(side) == 1 and X.GetSymbol() == "C" and X.GetTotalNumHs() == 3:
                 s, lab = s * .25, "CH₃⁺"
             add(mz, s, f"{lab} (M − {lost})" if lab else f"M − {lost}", fc)
@@ -492,7 +494,7 @@ def parse_structure(text: str) -> Chem.Mol | None:
 def analyze(text: str) -> Analysis:
     mol = parse_structure(text)
     if mol is None or mol.GetNumAtoms() == 0:
-        raise ValueError("No se pudo interpretar la estructura (SMILES, Molfile o InChI no válido).")
+        raise ValueError("Could not parse the structure (invalid SMILES, Molfile or InChI).")
     cnt = formula_counts(mol)
     C = cnt["C"] + cnt["Si"]
     X = cnt["H"] + cnt["F"] + cnt["Cl"] + cnt["Br"] + cnt["I"]

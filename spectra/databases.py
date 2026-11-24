@@ -1,7 +1,7 @@
-"""Conexión con bases de datos moleculares.
+"""Connection to molecular databases.
 
-* PubChem (PUG REST): nombre / SMILES / InChIKey -> CID, SMILES, IUPAC, nº CAS.
-* NIST Chemistry WebBook: espectros experimentales IR, EI-MS y UV-Vis en formato JCAMP-DX.
+* PubChem (PUG REST): name / SMILES / InChIKey -> CID, SMILES, IUPAC name, CAS number.
+* NIST Chemistry WebBook: experimental IR, EI-MS and UV-Vis spectra in JCAMP-DX format.
 """
 from __future__ import annotations
 
@@ -27,6 +27,9 @@ class Compound:
     inchikey: str
     cas: str | None
     url: str
+    iupac: str = ""
+    synonyms: tuple = ()
+    props: tuple = ()  # (name, value) pairs computed by PubChem
 
 
 def _get(url, **kw):
@@ -36,8 +39,9 @@ def _get(url, **kw):
 
 
 def pubchem_lookup(query: str, kind: str = "name") -> Compound | None:
-    """kind: 'name', 'smiles' o 'inchikey'."""
-    props = "SMILES,ConnectivitySMILES,MolecularFormula,InChIKey,IUPACName,Title"
+    """kind: 'name', 'smiles' or 'inchikey'."""
+    props = ("SMILES,ConnectivitySMILES,MolecularFormula,InChIKey,IUPACName,Title,XLogP,TPSA,Complexity,Charge,"
+             "HBondDonorCount,HBondAcceptorCount,RotatableBondCount,ExactMass,MolecularWeight")
     try:
         if kind == "smiles":
             r = requests.post(f"{PUBCHEM}/compound/smiles/property/{props}/JSON", data={"smiles": query}, headers=HEADERS, timeout=TIMEOUT)
@@ -50,21 +54,27 @@ def pubchem_lookup(query: str, kind: str = "name") -> Compound | None:
     except (requests.RequestException, KeyError, IndexError, ValueError):
         return None
     cid = p.get("CID")
-    if not cid:  # PubChem devuelve CID 0 para estructuras que no tiene
+    if not cid:  # PubChem returns CID 0 for structures it does not hold
         return None
-    cas = None
+    cas, synonyms = None, []
     try:
         syn = _get(f"{PUBCHEM}/compound/cid/{cid}/synonyms/JSON").json()
         for s in syn["InformationList"]["Information"][0].get("Synonym", []):
-            if re.fullmatch(r"\d{2,7}-\d{2}-\d", s) and _cas_ok(s):
-                cas = s
-                break
+            if re.fullmatch(r"\d{2,7}-\d{2}-\d", s):
+                if cas is None and _cas_ok(s):
+                    cas = s
+            elif len(synonyms) < 15 and not re.search(r"^(UNII|DTXSID|CHEMBL|NSC|EINECS|SCHEMBL|AKOS|MFCD|ZINC|HSDB|BRN|CCRIS|AI3|WLN|InChI)", s, re.I):
+                synonyms.append(s)
     except Exception:
         pass
+    keys = [("XLogP", "XLogP3"), ("TPSA", "TPSA (Å²)"), ("Complexity", "Complexity"), ("Charge", "Charge"),
+            ("HBondDonorCount", "H-bond donors"), ("HBondAcceptorCount", "H-bond acceptors"), ("RotatableBondCount", "Rotatable bonds")]
+    extra = tuple((label, p[k]) for k, label in keys if k in p)
     return Compound(
         cid=cid, name=p.get("Title") or p.get("IUPACName", ""), smiles=p.get("SMILES") or p.get("ConnectivitySMILES", ""),
         formula=p.get("MolecularFormula", ""), inchikey=p.get("InChIKey", ""), cas=cas,
         url=f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
+        iupac=p.get("IUPACName", ""), synonyms=tuple(synonyms), props=extra,
     )
 
 
@@ -145,7 +155,7 @@ def parse_jcamp(text: str) -> Spectrum | None:
             x0, vals, ends_dif = _asdf_line(line)
             if x0 is None:
                 continue
-            if prev_dif and ys:  # en formato DIF el primer Y repite el último (control)
+            if prev_dif and ys:  # in DIF form the first Y repeats the previous line's last Y (check value)
                 ys.pop()
             ys.extend(vals)
             prev_dif = ends_dif
@@ -165,7 +175,7 @@ def parse_jcamp(text: str) -> Spectrum | None:
 
 
 def nist_spectrum(cas: str, kind: str, index: int = 0) -> Spectrum | None:
-    """kind: 'IR', 'Mass' o 'UVVis'."""
+    """kind: 'IR', 'Mass' or 'UVVis'."""
     nid = "C" + cas.replace("-", "")
     try:
         r = requests.get(NIST, params={"JCAMP": nid, "Index": index, "Type": kind}, headers=HEADERS, timeout=TIMEOUT)
@@ -190,7 +200,7 @@ def nist_page(cas: str) -> str:
     return f"https://webbook.nist.gov/cgi/cbook.cgi?ID=C{cas.replace('-', '')}&Units=SI"
 
 
-# --- Conversión de unidades para superponer con la simulación --------------
+# --- Unit conversion so experimental data can be overlaid on the simulation ---
 def ir_to_transmittance(s: Spectrum) -> tuple[np.ndarray, np.ndarray]:
     x, y = s.x.copy(), s.y.copy()
     xu = s.meta.get("XUNITS", "").upper()
@@ -198,7 +208,7 @@ def ir_to_transmittance(s: Spectrum) -> tuple[np.ndarray, np.ndarray]:
         x = 1e4 / x
     yu = s.meta.get("YUNITS", "").upper()
     if "ABSORB" in yu:
-        y = 100 * 10 ** (-y / max(1e-9, y.max()) * 1.1)  # normalizado como la simulación
+        y = 100 * 10 ** (-y / max(1e-9, y.max()) * 1.1)  # normalised like the simulation
     elif y.max() <= 1.5:
         y = 100 * y
     return x, y
@@ -210,3 +220,85 @@ def uv_to_epsilon(s: Spectrum) -> tuple[np.ndarray, np.ndarray, str]:
     if "LOG" in yu:
         return x, 10 ** y, "ε"
     return x, y, s.meta.get("YUNITS", "absorbancia")
+
+
+# ---------------------------------------------------------------------------
+# User files exported by instruments (CSV / TXT / JCAMP-DX)
+# ---------------------------------------------------------------------------
+@dataclass
+class UserTable:
+    name: str
+    columns: list[str]
+    data: np.ndarray  # rows x columns (float)
+
+
+_NUM = re.compile(r"^[+-]?(\d+([.,]\d*)?|[.,]\d+)([Ee][+-]?\d+)?$")
+
+
+def _decode(raw: bytes) -> str:
+    for enc in ("utf-8-sig", "utf-16", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            if enc == "utf-16" and "\x00" in text:
+                continue
+            return text
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="ignore")
+
+
+def read_user_file(raw: bytes, name: str) -> UserTable:
+    """Read a spectrum exported by an instrument.
+
+    Accepts JCAMP-DX (.dx/.jdx/.jcamp) and delimited text (.csv/.txt/.tsv/.asc/.prn) with any of
+    ``,`` ``;`` tab or spaces as separator, decimal point or decimal comma, and any number of header
+    or metadata lines (they are skipped). Several Y columns (e.g. several samples) are kept.
+    Raises ValueError when no numeric table is found.
+    """
+    text = _decode(raw)
+    if name.lower().endswith((".dx", ".jdx", ".jcamp")) or text.lstrip().startswith("##"):
+        sp = parse_jcamp(text)
+        if sp is None or not len(sp.x):
+            raise ValueError("empty JCAMP-DX file")
+        ylab = sp.meta.get("YUNITS", "Y")
+        return UserTable(name, [sp.meta.get("XUNITS", "X"), ylab], np.column_stack([sp.x, sp.y]))
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    best = None
+    for sep in (";", "\t", ",", None):
+        rows, header, last_text = [], None, None
+        for line in lines:
+            parts = [p.strip().strip('"') for p in (line.split(sep) if sep else line.split())]
+            parts = [p for p in parts if p != ""] if sep is None else parts
+            numeric = [p for p in parts if _NUM.match(p)]
+            filled = [p for p in parts if p]
+            if len(numeric) >= 2 and len(numeric) == len(filled):
+                if not rows:
+                    header = last_text
+                rows.append(parts)
+            else:
+                if rows and len(rows) > 5:
+                    break  # metadata after the table
+                rows, last_text = ([], parts) if not rows else ([], parts)
+        if len(rows) >= 3 and (best is None or len(rows[0]) * len(rows) > best[0]):
+            best = (len(rows[0]) * len(rows), sep, rows, header)
+    if best is None:
+        raise ValueError("no numeric table found")
+    _, sep, rows, header = best
+    decimal_comma = sep != "," and any("," in p for r in rows[:20] for p in r)
+    ncol = max(len(r) for r in rows)
+
+    def num(p):
+        if not _NUM.match(p or ""):
+            return np.nan
+        return float(p.replace(",", ".")) if decimal_comma or ("," in p and sep != ",") else float(p)
+
+    data = np.array([[num(r[i]) if i < len(r) else np.nan for i in range(ncol)] for r in rows], dtype=float)
+    keep = ~np.all(np.isnan(data), axis=0)
+    data = data[:, keep]
+    if header and len(header) >= ncol:
+        cols = [h or f"col {i + 1}" for h, k in zip(header, keep) if k]
+    else:
+        cols = [f"col {i + 1}" for i in range(data.shape[1])]
+    data = data[~np.isnan(data[:, 0])]
+    return UserTable(name, cols, data)

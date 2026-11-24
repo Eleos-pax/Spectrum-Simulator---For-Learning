@@ -1,30 +1,56 @@
 # Spectrum Simulator – For Learning
 
-Simulador didáctico de espectros **UV-Vis**, **IR** y **masas (EI-MS)** para cualquier compuesto:
-uno que dibujes como ejercicio de clase o uno que ya exista. Si el compuesto está en las bases de
-datos, la app muestra el espectro **simulado junto al experimental** para compararlos.
+An educational simulator of **UV-Vis**, **IR**, **mass (EI-MS)** and **¹H / ¹³C NMR** spectra for any compound:
+one you draw as a class exercise or one that already exists. When the compound is found in the
+molecular databases, the app shows the **simulated spectrum next to the experimental one** so
+students can compare them.
 
-| IR (simulado vs. NIST) | UV-Vis | Masas (vista espejo) |
+The interface is bilingual (**Español / English**). Switching the language or the input mode never loses
+the structure, the drawing, uploaded files, axis ranges or any other setting.
+
+| Compound and nomenclature | IR (simulated vs. NIST) | UV-Vis |
 |---|---|---|
-| ![IR](docs/ir.png) | ![UV](docs/uv.png) | ![MS](docs/ms.png) |
+| ![Compound](docs/info.png) | ![IR](docs/ir.png) | ![UV](docs/uv.png) |
 
-## Qué hace
+| Mass spectrum (mirror view) | ¹H NMR | ¹³C NMR |
+|---|---|---|
+| ![MS](docs/ms.png) | ![1H NMR](docs/nmr_1h.png) | ![13C NMR](docs/nmr_13c.png) |
 
-- **Entrada del compuesto:** dibujarlo en el editor Ketcher, buscarlo por nombre (PubChem),
-  escribir SMILES / InChI / Molfile, o elegir uno de los ejemplos de clase.
-- **Datos generales:** fórmula, masa molar, masa exacta, insaturaciones (DBE), SMILES canónico.
-- **IR:** grupos funcionales detectados, bandas asignadas (ν C=O, O–H, N–H, C≡N, NO₂…), espectro en %T.
-- **UV-Vis:** sistemas conjugados, transiciones π→π* y n→π*, λmax, log ε y color aparente.
-- **Masas:** ion molecular con patrón isotópico exacto (M+1, M+2 de Cl/Br/S), fragmentos con su
-  interpretación (ruptura α, acilio, iminio, tropilio m/z 91, McLafferty, pérdidas neutras).
-- **Experimental:** el compuesto se identifica en **PubChem** por su InChIKey, se obtiene su nº CAS y se
-  descargan sus espectros IR, MS y UV-Vis del **NIST Chemistry WebBook** (JCAMP-DX).
-  Se pueden ver superpuestos o uno sobre otro.
-- Exportación de cada espectro simulado a CSV.
+## Features
 
-## Instalación y uso
+- **Compound input:** draw it in the Ketcher editor, search by name, CAS number or InChIKey (PubChem),
+  type a SMILES / InChI / Molfile, or pick one of the built-in class examples.
+  The structure on screen is kept when you switch between these modes, so you can look a compound
+  up by name and then edit it in the drawing editor.
+- **Compound sheet:** IUPAC name, common name and synonyms (PubChem), identifiers (formula, SMILES, InChI,
+  InChIKey, CID, CAS), functional groups, general properties (molar and exact mass, degrees of unsaturation,
+  rings, logP, molar refractivity, TPSA, H-bond donors/acceptors, rotatable bonds, sp³ fraction, stereocentres,
+  formal charge, Lipinski rule) and elemental composition. New structures that are not in PubChem show their
+  identifiers so students can work out the IUPAC name themselves.
+- **IR:** detected functional groups, assigned bands (C=O, O–H, N–H, C≡N, NO₂ stretches…), spectrum in % transmittance.
+- **UV-Vis:** conjugated systems, π→π* and n→π* transitions, λmax, log ε and an estimate of the apparent colour.
+- **Mass spectrum:** molecular ion with its exact isotope pattern (M+1, M+2 for Cl/Br/S) and fragments with an
+  interpretation (α-cleavage, acylium, iminium, tropylium m/z 91, McLafferty rearrangement, neutral losses),
+  plus the nitrogen rule.
+- **¹H and ¹³C NMR:** equivalent atoms grouped by symmetry, chemical shifts from additive increments, integrals,
+  n+1 multiplicities with J, an integration curve, DEPT-style carbon types, selectable spectrometer field
+  (60–800 MHz), and signal letters drawn on the structure.
+- **Experimental data:** the compound is identified in **PubChem** by its InChIKey, its CAS number is retrieved,
+  and its IR, MS and UV-Vis spectra are downloaded from the **NIST Chemistry WebBook** (JCAMP-DX).
+  Spectra can be overlaid or stacked; the mass spectrum also has a mirror view.
+- **Your own instrument data:** upload the files exported by the spectrophotometer, FTIR, mass spectrometer or
+  NMR (`.csv`, `.txt`, `.tsv`, `.asc`, `.dat`, JCAMP-DX `.dx/.jdx`) and plot them next to the simulation.
+  Comma, semicolon, tab or space separators, decimal comma and header lines are detected automatically;
+  several files and several Y columns can be shown at once. For UV-Vis, enter the concentration to convert
+  absorbance to ε (Beer-Lambert), or leave it at 0 to compare band shapes. An example export is in
+  [`examples/uv_acetophenone_example.csv`](examples/uv_acetophenone_example.csv).
+- **Interactive charts:** zoom with the mouse wheel or a box, pan, double-click to reset, set exact axis ranges,
+  and save any chart as PNG.
+- Every simulated spectrum can be exported as CSV.
 
-Requiere Python 3.10 o superior.
+## Installation
+
+Requires Python 3.10 or newer.
 
 ```bash
 pip install -r requirements.txt
@@ -34,37 +60,44 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Se abre en el navegador en `http://localhost:8501`.
+The app opens in your browser at `http://localhost:8501`.
 
-### Publicarlo para la clase (gratis)
+### Publishing it for a class (free)
 
-1. Entra en [share.streamlit.io](https://share.streamlit.io) con tu cuenta de GitHub.
-2. *Create app* → repositorio `Eleos-pax/Spectrum-Simulator---For-Learning`, rama `main`, archivo `app.py`.
-3. Comparte el enlace con tus estudiantes.
+1. Sign in to [share.streamlit.io](https://share.streamlit.io) with your GitHub account.
+2. *Create app* → repository `Eleos-pax/Spectrum-Simulator---For-Learning`, branch `main`, file `app.py`.
+3. Share the link with your students.
 
-## Estructura
+## Project layout
 
 ```
-app.py                 Interfaz (Streamlit + Plotly + Ketcher)
-spectra/simulate.py    Motor de simulación IR / UV-Vis / EI-MS (RDKit)
-spectra/databases.py   PubChem, NIST WebBook y lector JCAMP-DX
+app.py                 User interface (Streamlit + Plotly + Ketcher), state kept across language/mode changes
+spectra/simulate.py    IR / UV-Vis / EI-MS simulation engine (RDKit)
+spectra/databases.py   PubChem and NIST WebBook clients, JCAMP-DX reader
+spectra/nmr.py         ¹H / ¹³C NMR prediction (additive increments)
+spectra/i18n.py        Spanish / English interface text and label translation
+examples/              Example instrument export for testing the upload
 ```
 
-## Cómo se simula (y sus límites)
+## How the spectra are simulated (and their limits)
 
-Los modelos son **empíricos**, pensados para enseñar a interpretar espectros:
+The models are **empirical** and meant for learning to interpret spectra:
 
-- **IR:** tabla de frecuencias de grupo con patrones SMARTS, bandas C–H según hibridación, corrección por
-  conjugación del C=O y bandas lorentzianas. La región de huella (< 1500 cm⁻¹) es ilustrativa.
-- **UV-Vis:** tamaño del sistema conjugado, anillos aromáticos fusionados y auxocromos, al estilo de las
-  reglas de Woodward-Fieser; bandas gaussianas en energía.
-- **MS:** reglas de estabilidad de iones y radicales (Stevenson), sin cinética de fragmentación.
+- **IR:** group-frequency table matched with SMARTS patterns, C–H stretches by hybridisation, a C=O shift
+  for conjugation, and Lorentzian band shapes. The fingerprint region (< 1500 cm⁻¹) is only illustrative.
+- **UV-Vis:** size of the conjugated system, fused aromatic rings and auxochromes, in the spirit of the
+  Woodward-Fieser rules; Gaussian bands on an energy scale.
+- **MS:** ion and radical stability rules (Stevenson's rule); no fragmentation kinetics.
+- **NMR:** Shoolery-type increments for aliphatic ¹H, benzene + ortho/meta/para increments for aromatic ¹H,
+  Grant-Paul rules for aliphatic ¹³C, ipso/ortho/meta/para increments for aromatic ¹³C; first-order multiplets.
+  Typical accuracy is about ±0.3 ppm (¹H) and ±5 ppm (¹³C). NIST does not publish NMR spectra, so
+  experimental NMR comparison uses files you upload.
 
-Para investigación usa espectros medidos o cálculos de química cuántica (DFT / TD-DFT).
+For research work, use measured spectra or quantum-chemical calculations (DFT / TD-DFT).
 
-## Fuentes de datos
+## Data sources and credits
 
 - PubChem PUG REST (NCBI/NIH).
-- NIST Chemistry WebBook, NIST Standard Reference Database 69. Los espectros experimentales
-  pertenecen a sus autores y al NIST; cítalos si los usas en trabajos.
-- RDKit (química computacional), Plotly (gráficos), Ketcher (editor de estructuras).
+- NIST Chemistry WebBook, NIST Standard Reference Database 69. Experimental spectra belong to their
+  authors and to NIST; please cite them when you use them.
+- RDKit (cheminformatics), Plotly (charts), Ketcher (structure editor), Streamlit (web app).
