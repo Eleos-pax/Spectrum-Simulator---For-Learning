@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 VENV = ROOT / ".venv"
 REQ = ROOT / "requirements.txt"
 STAMP = VENV / ".requirements.sha256"
-PORT = 8501
+PORT = 8765  # own port range, away from Streamlit's default 8501 used by other projects
+APP_ID = "spectrum-simulator-for-learning"  # served from static/app_id.txt
 WIN = os.name == "nt"
 
 
@@ -48,10 +49,11 @@ def ensure_environment():
         STAMP.write_text(digest)
 
 
-def app_running(port: int) -> bool:
+def is_this_app(port: int) -> bool:
+    """True only if the server on this port is Spectrum Simulator (not another Streamlit project)."""
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/_stcore/health", timeout=1) as r:
-            return r.status == 200
+        with urllib.request.urlopen(f"http://localhost:{port}/app/static/app_id.txt", timeout=1) as r:
+            return r.read().decode().strip() == APP_ID
     except Exception:
         return False
 
@@ -62,18 +64,21 @@ def port_free(port: int) -> bool:
 
 
 def main():
-    if app_running(PORT):
-        say("La app ya está abierta. / The app is already running.")
-        webbrowser.open(f"http://localhost:{PORT}")
-        return
+    port = None
+    for p in range(PORT, PORT + 50):
+        if is_this_app(p):
+            say(f"La app ya está abierta en el puerto {p}. / The app is already running on port {p}.")
+            webbrowser.open(f"http://localhost:{p}")
+            return
+        if port is None and port_free(p):
+            port = p  # first free port; ports used by other programs are skipped
     ensure_environment()
-    port = next(p for p in range(PORT, PORT + 50) if port_free(p))
     say(f"Iniciando en http://localhost:{port} … (cierra esta ventana para salir / close this window to quit)")
     proc = subprocess.Popen([str(venv_python()), "-m", "streamlit", "run", str(ROOT / "app.py"),
                              "--server.port", str(port), "--server.headless", "true",
                              "--browser.gatherUsageStats", "false"], cwd=str(ROOT))
     for _ in range(120):
-        if app_running(port):
+        if is_this_app(port):
             webbrowser.open(f"http://localhost:{port}")
             break
         if proc.poll() is not None:

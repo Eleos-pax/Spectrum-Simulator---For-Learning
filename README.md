@@ -75,6 +75,8 @@ the structure, the drawing, uploaded files, axis ranges or any other setting.
    seconds and opens in your browser. Close the small console window to quit the app.
 
 If you move the folder, run the installer again so the shortcut points to the new location.
+The launcher uses its own ports (8765 and up) and checks that the server it finds is really Spectrum
+Simulator, so other Streamlit projects running on your computer are never opened by mistake.
 
 ## Installation
 
