@@ -54,6 +54,10 @@ the structure, the drawing, uploaded files, axis ranges or any other setting.
   downloadable peak table. You choose which series are marked, how many peaks are marked and the minimum prominence.
 - **Presentation-quality charts:** custom title, font size, line width, height, grid, legend position, and export
   as PNG, SVG or JPEG at 3× resolution from the camera icon.
+- **Export for papers (maximum quality):** every chart can be redrawn for journals with matplotlib at an exact
+  width (1 column 8.5 cm, 1.5 columns 11.4 cm, 2 columns 17.4 cm or custom), 300–1200 dpi, as **TIFF** (LZW),
+  PNG, or vector **PDF / EPS / SVG** with embedded TrueType fonts (Arial on Windows/macOS), font size in points and
+  the series you choose. A 2-column figure at 600 dpi is about 4100 px wide; at 1200 dpi about 8200 px.
 - **Interactive charts:** zoom with the mouse wheel or a box, pan, double-click to reset, set exact axis ranges,
   and save any chart as PNG.
 - Every simulated spectrum can be exported as CSV.
@@ -112,6 +116,7 @@ app.py                 User interface (Streamlit + Plotly + Ketcher), state kept
 spectra/simulate.py    IR / UV-Vis / EI-MS simulation engine (RDKit)
 spectra/databases.py   PubChem and NIST WebBook clients, JCAMP-DX reader
 spectra/nmr.py         ¹H / ¹³C NMR prediction (additive increments)
+spectra/export.py      Publication export (matplotlib): TIFF/PNG at a chosen dpi, vector PDF/EPS/SVG
 spectra/i18n.py        Spanish / English interface text and label translation
 examples/              Example instrument exports (pure compound and a multi-compound extract)
 launcher/              Desktop launcher, shortcut installer and app icon (PNG / ICO / ICNS)

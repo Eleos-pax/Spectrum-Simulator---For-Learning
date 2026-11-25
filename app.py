@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import html
+import io
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,10 +28,12 @@ import streamlit as st
 from plotly.subplots import make_subplots
 from rdkit import Chem
 from rdkit.Chem import Crippen, Draw, Lipinski, rdMolDescriptors
+from PIL import Image
 from rdkit.Chem.Draw import rdMolDraw2D
 
 from spectra import databases as db
 from spectra.i18n import EXAMPLES, HELP, LANGS, UI, label
+from spectra import export as pubexport
 from spectra import nmr
 from spectra.simulate import analyze
 
@@ -64,6 +67,8 @@ KEEP = st.session_state.setdefault("_keep", {
     "log_axis": True, "mirror": True, "ir_pick": 0, "not_found": None,
     "extract_name": "", "refs": [], "ref_error": None,
     "peaks": {"uid": "peaks", "on": True, "sim": False, "nist": True, "user": True, "ref": False, "n": 6, "prom": 5.0},
+    "pub": {"uid": "pub", "fmt": "tiff", "dpi": 600, "width": "col2", "wcm": 17.4, "hcm": 0.0, "font": 8.0, "lw": 1.0,
+            "title": True, "grid": False},
     "style": {"uid": "style", "title": "", "font": 14, "lw": 1.6, "grid": True, "legend": "bottom", "height": 480, "fmt": "png", "visband": True},
     "user": {"ir": [], "uv": [], "ms": [], "nmr": []}, "upload_n": 0, "uid": 0, "read_errors": [],
 })
@@ -530,11 +535,12 @@ def add_structure(fig, mol, signals, band=230):
     for sgn in signals:
         for i in sgn.atoms:
             m.GetAtomWithIdx(i).SetProp("atomNote", sgn.label)
-    d2 = rdMolDraw2D.MolDraw2DCairo(720, 330)
+    d2 = rdMolDraw2D.MolDraw2DCairo(1800, 825)  # high resolution: also used by the publication export
     opts = d2.drawOptions()
     opts.setBackgroundColour((1, 1, 1, 0))
-    opts.annotationFontScale = 0.85
-    opts.bondLineWidth = 2
+    opts.annotationFontScale = 0.9
+    opts.bondLineWidth = 5
+    opts.minFontSize = 40
     d2.DrawMolecule(m)
     d2.FinishDrawing()
     uri = "data:image/png;base64," + base64.b64encode(d2.GetDrawingText()).decode()
@@ -652,6 +658,54 @@ def chart_controls(sec, rows):
                 item_widget(stl, "visband", st.checkbox, T("visband"))
 
 
+def publication_panel(fig, sec, name):
+    """Journal-quality export (TIFF/PNG at a chosen dpi, or vector PDF/EPS/SVG) drawn with matplotlib."""
+    pub = KEEP["pub"]
+    with st.expander(T("pub")):
+        st.caption(T("pub_help"))
+        c = st.columns(4)
+        with c[0]:
+            item_widget(pub, "fmt", st.selectbox, T("pub_fmt"), list(pubexport.FORMATS), format_func=str.upper)
+        with c[1]:
+            item_widget(pub, "dpi", st.selectbox, T("pub_dpi"), [300, 600, 900, 1200])
+        with c[2]:
+            item_widget(pub, "width", st.selectbox, T("pub_width"), ["col1", "col15", "col2", "custom"], format_func=lambda v: T("w_" + v))
+        with c[3]:
+            if pub["width"] == "custom":
+                item_widget(pub, "wcm", st.number_input, T("pub_wcm"), min_value=3.0, max_value=60.0, step=0.5)
+            else:
+                item_widget(pub, "hcm", st.number_input, T("pub_hcm"), min_value=0.0, max_value=60.0, step=0.5)
+        c = st.columns(4)
+        with c[0]:
+            item_widget(pub, "font", st.slider, T("pub_font"), 5.0, 14.0, step=0.5)
+        with c[1]:
+            item_widget(pub, "lw", st.slider, T("pub_lw"), 0.3, 3.0, step=0.1)
+        with c[2]:
+            item_widget(pub, "title", st.checkbox, T("pub_title"))
+        with c[3]:
+            item_widget(pub, "grid", st.checkbox, T("grid"))
+        names = pubexport.series_names(fig)
+        include = st.multiselect(T("pub_series"), names, default=names, key=f"pubinc_{sec}_{KEEP['lang']}")
+        store = f"pubfile_{sec}"
+        if st.button(T("pub_make"), key=f"pubmk_{sec}", type="primary"):
+            width = pub["wcm"] if pub["width"] == "custom" else pubexport.WIDTHS_CM[pub["width"]]
+            with st.spinner("…"):
+                data, ext, mime = pubexport.to_publication(
+                    fig, fmt=pub["fmt"], dpi=int(pub["dpi"]), width_cm=float(width), height_cm=float(pub["hcm"]) or None,
+                    font_pt=float(pub["font"]), line_pt=float(pub["lw"]), include=include, title=pub["title"],
+                    legend=KEEP["style"]["legend"], grid=pub["grid"])
+            st.session_state[store] = (data, f"{name}_{sec}.{ext}", mime, ext)
+        if store in st.session_state:
+            data, fname, mime, ext = st.session_state[store]
+            mb = len(data) / 1e6
+            if ext in ("tiff", "png"):
+                w, h = Image.open(io.BytesIO(data)).size
+                st.caption(T("pub_info", w=w, h=h, dpi=int(pub["dpi"]), mb=mb))
+            else:
+                st.caption(T("pub_vector", mb=mb))
+            st.download_button(T("pub_download", f=fname), data, file_name=fname, mime=mime, key=f"pubdl_{sec}")
+
+
 PLOT_CONFIG = {"scrollZoom": True, "displaylogo": False, "modeBarButtonsToAdd": ["drawline", "eraseshape"]}
 
 
@@ -671,8 +725,9 @@ def show_chart(fig, sec, xdef, ydef=None, reverse=False, rows=()):
     stl = KEEP["style"]
     name = re.sub(r"[^\w-]+", "_", (stl["title"] or default_title() or "spectrum"))[:40]
     st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG | {"toImageButtonOptions": {
-        "format": stl["fmt"], "scale": 3, "filename": f"{name}_{sec}"}})
+        "format": stl["fmt"], "scale": 4, "filename": f"{name}_{sec}"}})
     chart_controls(sec, list(rows))
+    publication_panel(fig, sec, name)
     with st.expander(T("axes")):
         c = st.columns([1.2, 1, 1, 1, 1])
         with c[0]:
@@ -859,7 +914,7 @@ elif section == "nmr":
             else:
                 groups.append([sgn])
         add_labels(fig, series[0], [float(np.mean([g.shift for g in grp])) for grp in groups],
-                   [min(max(float(np.interp(g.shift, x, y)) for g in grp), 1.0) for grp in groups],
+                   [min(max(float(y[(x > g.shift - tol - 0.06) & (x < g.shift + tol + 0.06)].max(initial=0)) for g in grp), 1.0) for grp in groups],
                    [",".join(g.label for g in sorted(grp, key=lambda g: g.label)) for grp in groups], size=12, bold=True)
     rows = mark_peaks(fig, series, "nmr", "{:.2f}" if nucleus == "1H" else "{:.1f}", unit=" ppm")
     if A is not None and KEEP["struct_in_chart"] and signals:
