@@ -465,6 +465,7 @@ class Series:
     sticks: bool = False
     row: int = 1
     sign: int = 1
+    group: str = ""    # legend group: labels belong to their series and hide with it
 
 
 def find_peaks(x, y, n, prom_pct, minima=False, sticks=False):
@@ -551,7 +552,8 @@ def build_fig(series, xtitle, ytitle, reverse_x=False, mirror=False):
     stacked = (not overlay) and has_top and has_bottom and not mirror
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=.07,
                         subplot_titles=(T("sim"), T("exp_any"))) if stacked else go.Figure()
-    for s in series:
+    for k, s in enumerate(series):
+        s.group = f"g{k}"
         s.row = 2 if stacked and s.kind in ("nist", "user") else 1
         s.sign = -1 if mirror and s.kind in ("nist", "user") else 1
         y = s.sign * np.asarray(s.y, float)
@@ -562,17 +564,30 @@ def build_fig(series, xtitle, ytitle, reverse_x=False, mirror=False):
             for a, b in zip(s.x, y):
                 xs += [a, a, None]
                 ys += [0, b, None]
-            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name=s.name, hoverinfo="skip",
+            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name=s.name, hoverinfo="skip", legendgroup=s.group,
                                      line=dict(color=s.color, width=lw + .6, dash=dash)), **kw)
-            fig.add_trace(go.Scatter(x=s.x, y=y, mode="markers", marker=dict(size=4, color=s.color), showlegend=False,
+            fig.add_trace(go.Scatter(x=s.x, y=y, mode="markers", marker=dict(size=4, color=s.color), showlegend=False, legendgroup=s.group,
                                      hovertemplate=f"{html.escape(s.name)}<br>m/z %{{x}}<br>%{{y:.0f}}%<extra></extra>"), **kw)
         else:
-            fig.add_trace(go.Scatter(x=s.x, y=y, mode="lines", name=s.name, line=dict(color=s.color, width=lw, dash=dash)), **kw)
+            fig.add_trace(go.Scatter(x=s.x, y=y, mode="lines", name=s.name, legendgroup=s.group,
+                                     line=dict(color=s.color, width=lw, dash=dash)), **kw)
     style_layout(fig, xtitle, ytitle, reverse_x, stacked)
     if mirror:
         fig.update_layout(hovermode="closest")
     fig._stacked = stacked
     return fig
+
+
+def add_labels(fig, s, xs, ys, texts, below=False, size=None, bold=False):
+    """Text labels drawn as a trace in the series' legend group: clicking the legend hides them with the curve."""
+    if not len(xs):
+        return
+    size = size or max(9, int(KEEP["style"]["font"]) - 2)
+    kw = dict(row=s.row, col=1) if getattr(fig, "_stacked", False) else {}
+    fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="markers+text", text=[f"<b>{t}</b>" if bold else t for t in texts],
+                             textposition="bottom center" if below else "top center", cliponaxis=False,
+                             marker=dict(symbol="line-ns", size=7, line=dict(width=1, color=s.color), color=s.color),
+                             textfont=dict(color=s.color, size=size), legendgroup=s.group, showlegend=False, hoverinfo="skip"), **kw)
 
 
 def mark_peaks(fig, series, sec, fmt, minima=False, unit=""):
@@ -588,14 +603,10 @@ def mark_peaks(fig, series, sec, fmt, minima=False, unit=""):
         if not found:
             continue
         top_y = max((yy for _, yy in found), key=lambda v: -v if minima else v)
-        for xx, yy in sorted(found, key=lambda p: p[0]):
-            is_max = yy == top_y and sec == "uv"
-            text = ("λmax " if is_max else "") + fmt.format(xx) + (unit if sec == "uv" else "")
-            kw = dict(row=s.row, col=1) if getattr(fig, "_stacked", False) else {}
-            down = minima or s.sign < 0
-            fig.add_annotation(x=xx, y=s.sign * yy, text=f"<b>{text}</b>" if is_max else text, showarrow=True, arrowhead=0,
-                               arrowcolor=s.color, ax=0, ay=26 if down else -26,
-                               font=dict(size=max(9, int(KEEP["style"]["font"]) - 2), color=s.color), **kw)
+        pts = sorted(found, key=lambda p: p[0])
+        texts = [("λmax " if (yy == top_y and sec == "uv") else "") + fmt.format(xx) + (unit if sec == "uv" else "") for xx, yy in pts]
+        add_labels(fig, s, [p[0] for p in pts], [s.sign * p[1] for p in pts], texts, below=minima or s.sign < 0)
+        for xx, yy in pts:
             rows.append((s.name, fmt.format(xx) + unit, f"{yy:.3g}"))
     return rows
 
@@ -704,10 +715,9 @@ if section == "ir":
         series.append(Series(nm, ux, uy, "user", USER_COLORS[k % 6]))
     fig = build_fig(series, T("wavenumber"), T("transmittance"), reverse_x=True)
     if show_labels and A is not None:
-        kw = {"row": 1, "col": 1} if fig._stacked else {}
-        for c, w, i, lab in A.ir.peaks[:14]:
-            yv = float(np.interp(c, A.ir.x[::-1], A.ir.y[::-1]))
-            fig.add_annotation(x=c, y=yv, text=f"{c:.0f}", showarrow=True, arrowhead=0, ay=28, ax=0, font=dict(size=10, color=SIM), **kw)
+        pk_ = A.ir.peaks[:14]
+        add_labels(fig, series[0], [c for c, *_ in pk_], [float(np.interp(c, A.ir.x[::-1], A.ir.y[::-1])) for c, *_ in pk_],
+                   [f"{c:.0f}" for c, *_ in pk_], below=True, size=10)
     rows = mark_peaks(fig, series, "ir", "{:.0f}", minima=True, unit=" cm⁻¹")
     show_chart(fig, "ir", (400, 4000), (0, 105), reverse=True, rows=rows)
     if A is not None:
@@ -744,10 +754,9 @@ elif section == "uv":
         for lo, hi, col in [(380, 450, "#7c3aed"), (450, 495, "#2563eb"), (495, 570, "#16a34a"), (570, 590, "#eab308"), (590, 620, "#f97316"), (620, 750, "#dc2626")]:
             fig.add_vrect(x0=lo, x1=hi, fillcolor=col, opacity=.07, line_width=0)
     if show_labels and A is not None:
-        kw = {"row": 1, "col": 1} if fig._stacked else {}
-        for l, e, lab in A.uv.bands:
-            yv = float(ytr(np.array([max(np.interp(l, A.uv.x, A.uv.y), 1)]))[0])
-            fig.add_annotation(x=l, y=yv, text=f"{l:.0f} nm", showarrow=True, ay=-26, ax=0, font=dict(size=10, color=SIM), **kw)
+        add_labels(fig, series[0], [b[0] for b in A.uv.bands],
+                   [float(ytr(np.array([max(np.interp(b[0], A.uv.x, A.uv.y), 1)]))[0]) for b in A.uv.bands],
+                   [f"{b[0]:.0f} nm" for b in A.uv.bands], size=10)
     rows = mark_peaks(fig, series, "uv", "{:.0f}", unit=" nm")
     xs = [float(np.nanmin(s.x)) for s in series if len(s.x)] + [float(np.nanmax(s.x)) for s in series if len(s.x)]
     xdef = (180, 750) if not raw or not xs else (min(xs), max(xs))
@@ -787,8 +796,8 @@ elif section == "ms":
     fig = build_fig(series, "m/z", T("rel_int"), mirror=mirror)
     fig.update_layout(hovermode="closest")
     if show_labels and A is not None:
-        for m_, i_, lab in sorted(A.ms.peaks, key=lambda p: -p[1])[:8]:
-            fig.add_annotation(x=m_, y=i_, text=str(m_), showarrow=False, yshift=10, font=dict(size=11, color=SIM))
+        top8 = sorted(A.ms.peaks, key=lambda p: -p[1])[:8]
+        add_labels(fig, series[0], [p[0] for p in top8], [p[1] for p in top8], [str(p[0]) for p in top8], size=11)
     rows = mark_peaks(fig, series, "ms", "{:.0f}")
     xmax = max([float(np.nanmax(s.x)) for s in series if len(s.x)] + [50.0]) + 10
     show_chart(fig, "ms", (0, xmax), (-110 if mirror else 0, 115), rows=rows)
@@ -838,7 +847,8 @@ elif section == "nmr":
     if A is not None and nucleus == "1H" and KEEP["integral"] and signals:
         order = np.argsort(-x)
         cum = np.cumsum(y[order]) / max(np.sum(y), 1e-9)
-        fig.add_trace(go.Scatter(x=x[order], y=0.25 + 0.7 * cum, name=T("integral_curve"), line=dict(color="#16a34a", width=1.2, dash="dot")), **kw)
+        fig.add_trace(go.Scatter(x=x[order], y=0.25 + 0.7 * cum, name=T("integral_curve"), line=dict(color="#16a34a", width=1.2, dash="dot"),
+                                 hoverinfo="skip"), **kw)
     if show_labels and A is not None:
         # signals closer than this share one label (e.g. "4,5"), so the numbers do not overlap
         tol = 0.06 if nucleus == "1H" else 1.0
@@ -848,11 +858,9 @@ elif section == "nmr":
                 groups[-1].append(sgn)
             else:
                 groups.append([sgn])
-        for grp in groups:
-            xs_ = float(np.mean([g.shift for g in grp]))
-            yv = max(float(np.interp(g.shift, x, y)) for g in grp)
-            text = ",".join(g.label for g in sorted(grp, key=lambda g: g.label))
-            fig.add_annotation(x=xs_, y=min(yv, 1.0), text=f"<b>{text}</b>", showarrow=False, yshift=12, font=dict(size=12, color=SIM), **kw)
+        add_labels(fig, series[0], [float(np.mean([g.shift for g in grp])) for grp in groups],
+                   [min(max(float(np.interp(g.shift, x, y)) for g in grp), 1.0) for grp in groups],
+                   [",".join(g.label for g in sorted(grp, key=lambda g: g.label)) for grp in groups], size=12, bold=True)
     rows = mark_peaks(fig, series, "nmr", "{:.2f}" if nucleus == "1H" else "{:.1f}", unit=" ppm")
     if A is not None and KEEP["struct_in_chart"] and signals:
         add_structure(fig, A.mol, signals)
