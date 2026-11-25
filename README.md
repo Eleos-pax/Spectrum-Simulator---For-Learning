@@ -76,7 +76,7 @@ the structure, the drawing, uploaded files, axis ranges or any other setting.
 
 ### Updating
 
-Double-click the updater for your system: **`update_windows.bat`** (on Windows the installer also creates an
+Double-click the updater for your system: **`update_windows.bat`** (needs only Windows itself: PowerShell and robocopy) (on Windows the installer also creates an
 **“Actualizar Spectrum Simulator”** shortcut), `update_macos.command` or `update_linux.sh`. It downloads the latest
 version from GitHub and replaces the program files, keeping the installed Python environment and your own files.
 If the folder is a git clone, it runs `git pull` instead. Close the app window before updating.
