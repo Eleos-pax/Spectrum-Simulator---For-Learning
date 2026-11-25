@@ -35,6 +35,12 @@ foreach ($dir in $targets) {{
   $lnk.WindowStyle = 7
   $lnk.Description = 'UV-Vis, IR, MS and NMR spectrum simulator'
   $lnk.Save()
+  $up = $s.CreateShortcut((Join-Path $dir 'Actualizar {NAME}.lnk'))
+  $up.TargetPath = '{q(ROOT / "update_windows.bat")}'
+  $up.WorkingDirectory = '{q(ROOT)}'
+  $up.IconLocation = '{q(HERE / "icon.ico")},0'
+  $up.Description = 'Update Spectrum Simulator to the latest version'
+  $up.Save()
 }}
 """
     subprocess.check_call(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps])

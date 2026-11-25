@@ -14,6 +14,7 @@ the language or the entry mode never loses information.
 """
 from __future__ import annotations
 
+import base64
 import html
 import re
 from dataclasses import dataclass
@@ -59,11 +60,11 @@ st.markdown(
 KEEP = st.session_state.setdefault("_keep", {
     "lang": "es", "mode": "example", "current": DEFAULT_SMILES,
     "name": "acetophenone", "smiles_text": DEFAULT_SMILES, "example": 0, "drawn": None,
-    "want_exp": True, "overlay": "overlay", "labels": True, "section": "info", "nucleus": "1H", "mhz": 400, "integral": True, "axes": {},
+    "want_exp": True, "overlay": "overlay", "labels": True, "section": "info", "nucleus": "1H", "mhz": 400, "integral": True, "struct_in_chart": True, "axes": {},
     "log_axis": True, "mirror": True, "ir_pick": 0, "not_found": None,
     "extract_name": "", "refs": [], "ref_error": None,
     "peaks": {"uid": "peaks", "on": True, "sim": False, "nist": True, "user": True, "ref": False, "n": 6, "prom": 5.0},
-    "style": {"uid": "style", "title": "", "font": 14, "lw": 1.6, "grid": True, "legend": "top", "height": 480, "fmt": "png", "visband": True},
+    "style": {"uid": "style", "title": "", "font": 14, "lw": 1.6, "grid": True, "legend": "bottom", "height": 480, "fmt": "png", "visband": True},
     "user": {"ir": [], "uv": [], "ms": [], "nmr": []}, "upload_n": 0, "uid": 0, "read_errors": [],
 })
 
@@ -497,14 +498,17 @@ def find_peaks(x, y, n, prom_pct, minima=False, sticks=False):
 
 def style_layout(fig, xtitle, ytitle, reverse_x, stacked):
     stl = KEEP["style"]
-    legend = {"top": dict(orientation="h", y=1.02, yanchor="bottom", x=0),
+    legend = {"bottom": dict(orientation="h", yref="container", y=0.01, yanchor="bottom", x=0.5, xanchor="center"),
+              "top": dict(orientation="h", y=1.02, yanchor="bottom", x=0),
               "right": dict(orientation="v", y=1, x=1.02, xanchor="left")}.get(stl["legend"])
     title = (stl["title"] or default_title()).strip()
     grid = "rgba(128,128,128,.18)" if stl["grid"] else "rgba(0,0,0,0)"
     fig.update_layout(
         height=int(stl["height"]) + (180 if stacked else 0), template="simple_white",
-        margin=dict(l=70, r=30 if stl["legend"] != "right" else 200, t=80 if title else 40, b=60),
-        title=dict(text=html.escape(title), x=0.5, xanchor="center", font=dict(size=int(stl["font"]) + 6)) if title else None,
+        margin=dict(l=70, r=30 if stl["legend"] != "right" else 200, t=80 if title else 40,
+                    b=60 + (24 + 22 * (len(fig.data) > 4)) * (stl["legend"] == "bottom")),
+        title=dict(text=html.escape(title), x=0.5, xanchor="center", yref="container", y=1, yanchor="top", pad=dict(t=18),
+                   font=dict(size=int(stl["font"]) + 6)) if title else None,
         showlegend=stl["legend"] != "none", legend=legend, hovermode="x unified",
         font=dict(family="Arial, Helvetica, sans-serif", size=int(stl["font"]), color="#111827"),
     )
@@ -517,6 +521,27 @@ def style_layout(fig, xtitle, ytitle, reverse_x, stacked):
         fig.update_xaxes(title_text=xtitle)
     if reverse_x:
         fig.update_xaxes(autorange="reversed")
+
+
+def add_structure(fig, mol, signals, band=230):
+    """Put the structure, with the signal letters/numbers on its atoms, above the plot (included in exports)."""
+    m = Chem.Mol(mol)
+    for sgn in signals:
+        for i in sgn.atoms:
+            m.GetAtomWithIdx(i).SetProp("atomNote", sgn.label)
+    d2 = rdMolDraw2D.MolDraw2DCairo(720, 330)
+    opts = d2.drawOptions()
+    opts.setBackgroundColour((1, 1, 1, 0))
+    opts.annotationFontScale = 0.85
+    opts.bondLineWidth = 2
+    d2.DrawMolecule(m)
+    d2.FinishDrawing()
+    uri = "data:image/png;base64," + base64.b64encode(d2.GetDrawingText()).decode()
+    h0, t0, b0 = fig.layout.height, fig.layout.margin.t, fig.layout.margin.b
+    fig.update_layout(height=h0 + band, margin_t=t0 + band)
+    plot_h = h0 + band - (t0 + band) - b0
+    fig.add_layout_image(source=uri, xref="paper", yref="paper", x=0.5, y=1.0 + 8 / plot_h, xanchor="center", yanchor="bottom",
+                         sizex=1.0, sizey=(band - 16) / plot_h, sizing="contain", layer="above")
 
 
 def build_fig(series, xtitle, ytitle, reverse_x=False, mirror=False):
@@ -565,7 +590,7 @@ def mark_peaks(fig, series, sec, fmt, minima=False, unit=""):
         top_y = max((yy for _, yy in found), key=lambda v: -v if minima else v)
         for xx, yy in sorted(found, key=lambda p: p[0]):
             is_max = yy == top_y and sec == "uv"
-            text = ("λmax " if is_max else "") + fmt.format(xx) + unit
+            text = ("λmax " if is_max else "") + fmt.format(xx) + (unit if sec == "uv" else "")
             kw = dict(row=s.row, col=1) if getattr(fig, "_stacked", False) else {}
             down = minima or s.sign < 0
             fig.add_annotation(x=xx, y=s.sign * yy, text=f"<b>{text}</b>" if is_max else text, showarrow=True, arrowhead=0,
@@ -608,7 +633,7 @@ def chart_controls(sec, rows):
             item_widget(stl, "fmt", st.selectbox, T("fmt"), ["png", "svg", "jpeg"])
         c = st.columns(3)
         with c[0]:
-            item_widget(stl, "legend", st.selectbox, T("legend_pos"), ["top", "right", "none"], format_func=lambda v: T("lg_" + v))
+            item_widget(stl, "legend", st.selectbox, T("legend_pos"), ["bottom", "top", "right", "none"], format_func=lambda v: T("lg_" + v))
         with c[1]:
             item_widget(stl, "grid", st.checkbox, T("grid"))
         with c[2]:
@@ -795,6 +820,8 @@ elif section == "nmr":
     with c_c:
         if nucleus == "1H" and A is not None:
             st.toggle(T("show_integral"), key=keep("integral"), on_change=save("integral"))
+        if A is not None:
+            st.toggle(T("struct_in_chart"), key=keep("struct_in_chart"), on_change=save("struct_in_chart"))
     predict = (lambda m: nmr.predict_h(m)) if nucleus == "1H" else (lambda m: nmr.predict_c(m))
     spec = (lambda sg: nmr.spectrum_h(sg, KEEP["mhz"])) if nucleus == "1H" else nmr.spectrum_c
     series, signals = [], []
@@ -813,25 +840,26 @@ elif section == "nmr":
         cum = np.cumsum(y[order]) / max(np.sum(y), 1e-9)
         fig.add_trace(go.Scatter(x=x[order], y=0.25 + 0.7 * cum, name=T("integral_curve"), line=dict(color="#16a34a", width=1.2, dash="dot")), **kw)
     if show_labels and A is not None:
-        for sgn in signals:
-            yv = float(np.interp(sgn.shift, x, y))
-            fig.add_annotation(x=sgn.shift, y=min(yv, 1.0), text=f"<b>{sgn.label}</b>", showarrow=False, yshift=12, font=dict(size=12, color=SIM), **kw)
+        # signals closer than this share one label (e.g. "4,5"), so the numbers do not overlap
+        tol = 0.06 if nucleus == "1H" else 1.0
+        groups = []
+        for sgn in sorted(signals, key=lambda g: g.shift):
+            if groups and sgn.shift - groups[-1][-1].shift < tol:
+                groups[-1].append(sgn)
+            else:
+                groups.append([sgn])
+        for grp in groups:
+            xs_ = float(np.mean([g.shift for g in grp]))
+            yv = max(float(np.interp(g.shift, x, y)) for g in grp)
+            text = ",".join(g.label for g in sorted(grp, key=lambda g: g.label))
+            fig.add_annotation(x=xs_, y=min(yv, 1.0), text=f"<b>{text}</b>", showarrow=False, yshift=12, font=dict(size=12, color=SIM), **kw)
     rows = mark_peaks(fig, series, "nmr", "{:.2f}" if nucleus == "1H" else "{:.1f}", unit=" ppm")
+    if A is not None and KEEP["struct_in_chart"] and signals:
+        add_structure(fig, A.mol, signals)
     show_chart(fig, "nmr_" + nucleus, (-0.5, 13) if nucleus == "1H" else (-5, 230), (-0.03, 1.15), reverse=True, rows=rows)
 
     if A is not None:
-        left, right = st.columns([1, 1.6], gap="large")
-        with left:
-            mol = Chem.Mol(A.mol)
-            for sgn in signals:
-                for i in sgn.atoms:
-                    mol.GetAtomWithIdx(i).SetProp("atomNote", sgn.label)
-            d2 = rdMolDraw2D.MolDraw2DCairo(480, 380)
-            d2.drawOptions().annotationFontScale = 0.9
-            d2.DrawMolecule(mol)
-            d2.FinishDrawing()
-            st.image(d2.GetDrawingText(), use_container_width=True)
-        with right:
+        with st.container():
             if nucleus == "1H":
                 rows_t = [(s_.label, f"{s_.shift:.2f}", s_.n, s_.mult + (f" (J ≈ {s_.J:.0f} Hz)" if s_.mult not in ("s", "br s", "m") else ""), L(s_.desc)) for s_ in signals]
                 df = pd.DataFrame(rows_t, columns=[T("signal"), T("shift"), T("integral"), T("mult"), T("type")])

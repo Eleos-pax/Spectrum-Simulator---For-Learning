@@ -74,6 +74,13 @@ the structure, the drawing, uploaded files, axis ranges or any other setting.
    (`.venv/`) and installs the dependencies, which takes a few minutes and needs internet. After that, it starts in
    seconds and opens in your browser. Close the small console window to quit the app.
 
+### Updating
+
+Double-click the updater for your system: **`update_windows.bat`** (on Windows the installer also creates an
+**“Actualizar Spectrum Simulator”** shortcut), `update_macos.command` or `update_linux.sh`. It downloads the latest
+version from GitHub and replaces the program files, keeping the installed Python environment and your own files.
+If the folder is a git clone, it runs `git pull` instead. Close the app window before updating.
+
 If you move the folder, run the installer again so the shortcut points to the new location.
 The launcher uses its own ports (8765 and up) and checks that the server it finds is really Spectrum
 Simulator, so other Streamlit projects running on your computer are never opened by mistake.
