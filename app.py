@@ -36,6 +36,7 @@ from spectra import databases as db
 from spectra.i18n import EXAMPLES, HELP, LANGS, UI, label
 from spectra import export as pubexport
 from spectra import nmr
+from spectra import public_db as pdb
 from spectra.simulate import analyze
 
 ICON = Path(__file__).parent / "launcher" / "favicon.png"
@@ -48,7 +49,14 @@ DEFAULT_SMILES = "CC(=O)c1ccccc1"
 st.markdown(
     """
     <style>
-      .block-container {padding-top: 1.6rem;}
+      .block-container {padding-top: 3.6rem; padding-bottom: 3rem;}  /* clear of Streamlit's top bar */
+      .cname {font-size: 1.7rem; font-weight: 700; line-height: 1.2; margin-bottom: .6rem; text-wrap: balance}
+      .tiles {display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: .5rem; margin-bottom: .6rem}
+      .tile {border: 1px solid rgba(128,128,128,.28); border-radius: 10px; padding: .45rem .7rem; min-width: 0}
+      .tile .lab {font-size: .76rem; opacity: .72; letter-spacing: .02em}
+      .tile .val {font-size: 1.3rem; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere}
+      .smiles {font-family: ui-monospace, Consolas, monospace; font-size: .85rem; padding: .35rem .6rem; border-radius: 8px;
+               background: rgba(128,128,128,.10); overflow-wrap: anywhere; margin-bottom: .5rem}
       .chip {display:inline-block;padding:2px 10px;margin:2px 4px 2px 0;border-radius:999px;
              background:rgba(37,99,235,.10);border:1px solid rgba(37,99,235,.35);font-size:.85rem}
       .legend-sim {color:#2563eb;font-weight:600} .legend-exp {color:#dc2626;font-weight:600}
@@ -66,7 +74,7 @@ KEEP = st.session_state.setdefault("_keep", {
     "name": "acetophenone", "smiles_text": DEFAULT_SMILES, "example": 0, "drawn": None,
     "want_exp": True, "overlay": "overlay", "labels": True, "section": "info", "nucleus": "1H", "mhz": 400, "integral": True, "struct_in_chart": True, "axes": {},
     "log_axis": True, "mirror": True, "ir_pick": 0, "not_found": None,
-    "extract_name": "", "refs": [], "ref_error": None,
+    "extract_name": "", "refs": [], "ref_error": None, "resolved_by": None,
     "peaks": {"uid": "peaks", "on": True, "sim": False, "nist": True, "user": True, "ref": False, "n": 6, "prom": 5.0},
     "pub": {"uid": "pub", "fmt": "tiff", "dpi": 600, "width": "col2", "wcm": 17.4, "hcm": 0.0, "font": 8.0, "lw": 1.0,
             "title": True, "grid": False},
@@ -135,6 +143,26 @@ def cached_nist(cas):
     return {"IR": db.nist_ir_all(cas), "Mass": db.nist_spectrum(cas, "Mass"), "UVVis": db.nist_spectrum(cas, "UVVis")}
 
 
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def cached_resolve(name):
+    return pdb.resolve_name(name)
+
+
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def cached_wikidata(inchikey):
+    return pdb.wikidata(inchikey)
+
+
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def cached_ms_libraries(inchikey):
+    return pdb.massbank_ms(inchikey) + pdb.mona_ms(inchikey)
+
+
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def cached_compound_extras(inchikey, cid):
+    return {"pubchem": pdb.pubchem_experimental(cid) if cid else [], "chembl": pdb.chembl(inchikey)}
+
+
 @st.cache_data(show_spinner=False)
 def cached_analysis(smiles):
     return analyze(smiles)
@@ -161,8 +189,13 @@ def on_name_search():
         return
     kind = "inchikey" if len(q) == 27 and q.count("-") == 2 else "name"
     comp = cached_pubchem(q, kind)
+    KEEP["resolved_by"] = None
     if comp and comp.smiles:
         KEEP["current"], KEEP["not_found"] = comp.smiles, None
+        return
+    found = cached_resolve(q) if kind == "name" else None  # OPSIN (IUPAC), Wikidata (Spanish names), NCI CACTUS
+    if found:
+        KEEP["current"], KEEP["not_found"], KEEP["resolved_by"] = found[0], None, (found[1], q)
     else:
         KEEP["not_found"] = q
 
@@ -194,6 +227,8 @@ def on_add_ref():
         comp = cached_pubchem(q, "name")
         if comp and comp.smiles:
             smiles, label = comp.smiles, comp.name
+        elif cached_resolve(q):
+            smiles = cached_resolve(q)[0]
         elif Chem.MolFromSmiles(q) is not None:
             smiles = q
     if smiles is None:
@@ -228,6 +263,8 @@ if mode == "name":
         st.form_submit_button(T("search"), on_click=on_name_search, use_container_width=True)
     if KEEP["not_found"]:
         sb.error(T("not_found", q=KEEP["not_found"]))
+    elif KEEP.get("resolved_by"):
+        sb.caption(T("resolved_by", src=KEEP["resolved_by"][0], q=KEEP["resolved_by"][1]))
 elif mode == "draw":
     sb.info(T("draw_hint"))
 elif mode == "smiles":
@@ -240,25 +277,6 @@ elif mode == "extract":
 else:
     idx = 0 if KEEP["lang"] == "es" else 1
     sb.selectbox(T("compound"), range(len(EXAMPLES)), format_func=lambda i: EXAMPLES[i][idx], key=keep("example"), on_change=on_example)
-
-# Structure editor: available in every input mode (except extract), loaded with the current structure,
-# so a searched, typed or example compound can be modified directly and simulated with "Apply".
-if mode != "extract":
-    try:
-        from streamlit_ketcher import st_ketcher
-        with st.expander(T("editor"), expanded=(mode == "draw")):
-            st.caption(T("draw_hint"))
-            # the key follows the structure: Ketcher only reads its molecule when it is created,
-            # so a new key reloads the editor whenever the compound changes (search, example, SMILES)
-            ed_key = "ketcher_" + hashlib.md5(KEEP["current"].encode()).hexdigest()[:10]
-            drawn = st_ketcher(KEEP["current"], height=430, key=ed_key)
-        if drawn and drawn != KEEP["drawn"]:
-            KEEP["drawn"] = drawn
-            if drawn != KEEP["current"]:
-                KEEP["current"] = drawn
-                st.rerun()
-    except ImportError:
-        sb.error(T("no_ketcher"))
 
 with sb.expander(f"{T('refs')} ({len(KEEP['refs'])})", expanded=mode == "extract"):
     st.caption(T("refs_help"))
@@ -283,6 +301,29 @@ overlay = KEEP["overlay"] == "overlay"
 show_labels = sb.toggle(T("labels"), key=keep("labels"), on_change=save("labels"))
 
 # ---------------------------------------------------------------------------
+# Structure editor: available in every input mode (except extract), loaded with the current structure,
+# so a searched, typed or example compound can be modified directly and simulated with "Apply".
+# ---------------------------------------------------------------------------
+def structure_editor():
+    try:
+        from streamlit_ketcher import st_ketcher
+    except ImportError:
+        st.error(T("no_ketcher"))
+        return
+    with st.expander(T("editor"), expanded=(mode == "draw")):
+        st.caption(T("draw_hint"))
+        # the key follows the structure: Ketcher only reads its molecule when it is created,
+        # so a new key reloads the editor whenever the compound changes (search, example, SMILES)
+        ed_key = "ketcher_" + hashlib.md5(KEEP["current"].encode()).hexdigest()[:10]
+        drawn = st_ketcher(KEEP["current"], height=460, key=ed_key)
+    if drawn and drawn != KEEP["drawn"]:
+        KEEP["drawn"] = drawn
+        if drawn != KEEP["current"]:
+            KEEP["current"] = drawn
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
 A, compound = None, None
@@ -295,6 +336,7 @@ if mode != "extract":
         A = cached_analysis(KEEP["current"])
     except ValueError:
         st.error(T("bad_structure"))
+        structure_editor()  # let the user fix the drawing
         st.stop()
     if A.inchikey:
         with st.spinner(T("finding")):
@@ -313,42 +355,59 @@ for r in KEEP["refs"]:
             pass
 
 
+WD = cached_wikidata(A.inchikey) if (A is not None and A.inchikey and want_exp) else None
+
+
+def display_name():
+    """Compound name in the interface language (Spanish label from Wikidata when available)."""
+    if not compound:
+        return ""
+    if KEEP["lang"] == "es" and WD and WD.get("es"):
+        return WD["es"][:1].upper() + WD["es"][1:]
+    return compound.name
+
+
 def default_title():
     if mode == "extract":
         return KEEP["extract_name"].strip() or T("extract_default")
-    return compound.name if compound else ""
+    return display_name()
 
 
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
+def tiles(items):
+    """Responsive value tiles (wrap instead of truncating like st.metric)."""
+    cells = "".join(f"<div class='tile'><div class='lab'>{lab}</div><div class='val'>{val}</div></div>" for lab, val in items)
+    st.markdown(f"<div class='tiles'>{cells}</div>", unsafe_allow_html=True)
+
+
 if A is not None:
-    c1, c2 = st.columns([1, 2.2], gap="large")
-    with c1:
-        st.image(Draw.MolToImage(A.mol, size=(420, 320)), use_container_width=True)
-    with c2:
-        st.subheader(compound.name if compound else T("unknown"))
-        m1, m2, m3, m4 = st.columns(4)
-        m1.markdown(f"**{T('formula')}**<br><span style='font-size:1.4rem'>{A.formula_html}</span>", unsafe_allow_html=True)
-        m2.metric(T("molar_mass"), f"{A.mw:.2f}")
-        m3.metric(T("exact_mass"), f"{A.exact_mass:.4f}")
-        m4.metric(T("dbe"), f"{A.dbe:g}")
-        st.code(A.smiles, language=None)
-        if compound:
-            links = [f"[PubChem CID {compound.cid}]({compound.url})"]
-            if compound.cas:
-                links.append(f"CAS {compound.cas} · [NIST WebBook]({db.nist_page(compound.cas)})")
-            st.markdown(" · ".join(links))
-            if want_exp and compound.cas:
-                st.markdown(f"{T('found')}: **IR {len(exp['IR'])} · MS {int(exp['Mass'] is not None)} · UV-Vis {int(exp['UVVis'] is not None)}**")
-            elif want_exp:
-                st.markdown(f"<span class='note'>{T('no_cas')}</span>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<span class='note'>{T('new_structure')}</span>", unsafe_allow_html=True)
-        legend = f"<span class='legend-sim'>━ {T('sim')}</span>"
-        if n_exp:
-            legend += f" &nbsp; <span class='legend-exp'>━ {T('exp')}</span>"
-        st.markdown(legend, unsafe_allow_html=True)
+    with st.container(border=True):
+        c1, c2 = st.columns([1, 2.3], gap="large", vertical_alignment="center")
+        with c1:
+            st.image(Draw.MolToImage(A.mol, size=(420, 320)), use_container_width=True)
+        with c2:
+            st.markdown(f"<div class='cname'>{html.escape(display_name() or T('unknown'))}</div>", unsafe_allow_html=True)
+            tiles([(T("formula"), A.formula_html), (T("molar_mass"), f"{A.mw:.2f}"),
+                   (T("exact_mass"), f"{A.exact_mass:.4f}"), (T("dbe"), f"{A.dbe:g}")])
+            st.markdown(f"<div class='smiles'>{html.escape(A.smiles)}</div>", unsafe_allow_html=True)
+            if compound:
+                links = [f"[PubChem CID {compound.cid}]({compound.url})"]
+                if compound.cas:
+                    links.append(f"CAS {compound.cas} · [NIST WebBook]({db.nist_page(compound.cas)})")
+                st.markdown(" · ".join(links))
+                if want_exp and compound.cas:
+                    st.markdown(f"{T('found')}: **IR {len(exp['IR'])} · MS {int(exp['Mass'] is not None)} · UV-Vis {int(exp['UVVis'] is not None)}**")
+                elif want_exp:
+                    st.markdown(f"<span class='note'>{T('no_cas')}</span>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<span class='note'>{T('new_structure')}</span>", unsafe_allow_html=True)
+            legend = f"<span class='legend-sim'>━ {T('sim')}</span>"
+            if n_exp:
+                legend += f" &nbsp; <span class='legend-exp'>━ {T('exp')}</span>"
+            st.markdown(legend, unsafe_allow_html=True)
+    structure_editor()
 else:
     st.subheader("🧫 " + default_title())
     st.caption(T("extract_hint"))
@@ -849,12 +908,25 @@ elif section == "ms":
         series.append(Series(T("ms_sim"), np.array([p[0] for p in A.ms.peaks]), np.array([p[1] for p in A.ms.peaks]), "sim", SIM, sticks=True))
     for k, (lab, an) in enumerate(REFS):
         series.append(Series(lab, np.array([p[0] for p in an.ms.peaks]), np.array([p[1] for p in an.ms.peaks]), "ref", REF_COLORS[k % 6], sticks=True))
-    mirror = False
-    if (exp["Mass"] is not None or KEEP["user"]["ms"]) and (A is not None or REFS):
-        mirror = st.toggle(T("mirror"), key=keep("mirror"), on_change=save("mirror"))
+    libs = []  # (label, x, y): NIST + MassBank + MoNA
     if exp["Mass"] is not None:
         e = exp["Mass"]
-        series.append(Series(T("ms_exp"), e.x, 100 * e.y / e.y.max(), "nist", EXP, sticks=True))
+        libs.append(("NIST WebBook · EI 70 eV", e.x, 100 * e.y / e.y.max()))
+    if A is not None and A.inchikey and want_exp:
+        with st.spinner(T("loading_db")):
+            for ms_ in cached_ms_libraries(A.inchikey):
+                if len(ms_.x) > 1:
+                    libs.append((ms_.label, ms_.x, ms_.y))
+    mirror = False
+    if (libs or KEEP["user"]["ms"]) and (A is not None or REFS):
+        mirror = st.toggle(T("mirror"), key=keep("mirror"), on_change=save("mirror"))
+    if libs:
+        names_ = [lab for lab, _, _ in libs]
+        chosen = st.multiselect(T("ms_db"), names_, default=names_[:1], help=T("ms_db_help"),
+                                key=f"msdb_{hashlib.md5(KEEP['current'].encode()).hexdigest()[:8]}")
+        exp_cols = [EXP, "#b45309", "#7c2d12", "#db2777", "#9f1239", "#c2410c"]
+        for k, (lab, x_, y_) in enumerate(l for l in libs if l[0] in chosen):
+            series.append(Series(lab, np.asarray(x_), np.asarray(y_), "nist", exp_cols[k % 6], sticks=True))
     for k, (nm, ux, uy) in enumerate(user_series("ms")):
         series.append(Series(nm, ux, uy, "user", USER_COLORS[k % 6], sticks=True))
     fig = build_fig(series, "m/z", T("rel_int"), mirror=mirror)
@@ -963,6 +1035,8 @@ elif section == "info":
         if compound:
             st.markdown(f"**{T('iupac')}:** {compound.iupac or '—'}")
             st.markdown(f"**{T('common')}:** {compound.name}")
+            if WD and WD.get("es"):
+                st.markdown(f"**{T('es_name')}:** {html.escape(WD['es'])}")
             if compound.synonyms:
                 st.markdown(f"**{T('synonyms')}:**")
                 st.markdown(" ".join(f"<span class='chip'>{n}</span>" for n in compound.synonyms), unsafe_allow_html=True)
@@ -1000,6 +1074,28 @@ elif section == "info":
         if compound and compound.props:
             st.markdown(f"**{T('pubchem_props')}**")
             st.dataframe(pd.DataFrame([(a, str(b)) for a, b in compound.props], columns=[T("property"), T("value")]), hide_index=True, use_container_width=True)
+
+    if compound and want_exp:
+        with st.spinner(T("loading_db")):
+            extras = cached_compound_extras(A.inchikey, compound.cid)
+        if extras["pubchem"]:
+            st.markdown(f"#### {T('exp_props')}")
+            st.dataframe(pd.DataFrame(extras["pubchem"], columns=[T("property"), T("value"), T("source")]), hide_index=True, use_container_width=True)
+        cols_ = st.columns(2, gap="large")
+        with cols_[0]:
+            if WD:
+                st.markdown(f"**[{T('wd_props')} {WD['qid']}]({WD['url']})** · {T('mp')}: {WD['mp'] if WD['mp'] is not None else '—'} · "
+                            f"{T('bp')}: {WD['bp'] if WD['bp'] is not None else '—'}")
+        with cols_[1]:
+            ch = extras["chembl"]
+            if ch:
+                st.markdown(f"**[{T('chembl')}: {ch['id']}]({ch['url']})** · {ch['type'] or ''} · {T('max_phase')}: {ch['max_phase'] if ch['max_phase'] is not None else '—'}")
+    if A.inchikey:
+        st.markdown(f"#### {T('other_dbs')}")
+        st.caption(T("other_dbs_help"))
+        links = pdb.external_links(A.inchikey, compound.name if compound else "", compound.cas if compound else None, compound.cid if compound else None)
+        st.dataframe(pd.DataFrame([(n_, u_, o_) for n_, u_, o_ in links], columns=["", "URL", T("offers")]), hide_index=True,
+                     use_container_width=True, column_config={"URL": st.column_config.LinkColumn(display_text=r"https?://([^/]+)/.*")})
 
 else:
     st.markdown(HELP[KEEP["lang"]])

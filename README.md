@@ -40,6 +40,11 @@ the structure, the drawing, uploaded files, axis ranges or any other setting.
 - **¹H and ¹³C NMR:** equivalent atoms grouped by symmetry, chemical shifts from additive increments, integrals,
   n+1 multiplicities with J, an integration curve, DEPT-style carbon types, selectable spectrometer field
   (60–800 MHz), and signal letters drawn on the structure.
+- **More public databases (free, no key):** MassBank Europe and MoNA experimental mass spectra (choose any to
+  compare with the simulation), OPSIN for IUPAC names, Wikidata for Spanish names (e.g. “acetofenona”, “cafeína”)
+  plus melting/boiling points, NCI CACTUS as a further name resolver, PubChem experimental properties with their
+  literature source, ChEMBL bioactivity records, and direct links to SDBS, SpectraBase, NMRShiftDB2, HMDB, NP-MRD,
+  COCONUT, ChemSpider, ChEBI and CAS Common Chemistry.
 - **Experimental data:** the compound is identified in **PubChem** by its InChIKey, its CAS number is retrieved,
   and its IR, MS and UV-Vis spectra are downloaded from the **NIST Chemistry WebBook** (JCAMP-DX).
   Spectra can be overlaid or stacked; the mass spectrum also has a mirror view.
@@ -115,6 +120,7 @@ The app opens in your browser at `http://localhost:8501`.
 app.py                 User interface (Streamlit + Plotly + Ketcher), state kept across language/mode changes
 spectra/simulate.py    IR / UV-Vis / EI-MS simulation engine (RDKit)
 spectra/databases.py   PubChem and NIST WebBook clients, JCAMP-DX reader
+spectra/public_db.py   MassBank, MoNA, OPSIN, Wikidata, NCI CACTUS, ChEMBL clients and database links
 spectra/nmr.py         ¹H / ¹³C NMR prediction (additive increments)
 spectra/export.py      Publication export (matplotlib): TIFF/PNG at a chosen dpi, vector PDF/EPS/SVG
 spectra/i18n.py        Spanish / English interface text and label translation
@@ -140,7 +146,9 @@ For research work, use measured spectra or quantum-chemical calculations (DFT / 
 
 ## Data sources and credits
 
-- PubChem PUG REST (NCBI/NIH).
+- PubChem PUG REST and PUG-View (NCBI/NIH).
+- MassBank Europe (CC BY records; cite the record accession) and MoNA, MassBank of North America (Fiehn Lab, UC Davis).
+- Wikidata (CC0), ChEMBL and OPSIN (EMBL-EBI), NCI/CADD Chemical Identifier Resolver (CACTUS).
 - NIST Chemistry WebBook, NIST Standard Reference Database 69. Experimental spectra belong to their
   authors and to NIST; please cite them when you use them.
 - RDKit (cheminformatics), Plotly (charts), Ketcher (structure editor), Streamlit (web app).
