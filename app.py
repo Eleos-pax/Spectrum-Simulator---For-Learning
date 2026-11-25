@@ -14,6 +14,8 @@ the language or the entry mode never loses information.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -28,7 +30,8 @@ from spectra.i18n import EXAMPLES, HELP, LANGS, UI, label
 from spectra import nmr
 from spectra.simulate import analyze
 
-st.set_page_config(page_title="Spectrum Simulator – For Learning", page_icon="🧪", layout="wide")
+ICON = Path(__file__).parent / "launcher" / "favicon.png"
+st.set_page_config(page_title="Spectrum Simulator – For Learning", page_icon=str(ICON) if ICON.exists() else "🧪", layout="wide")
 
 SIM = "#2563eb"  # simulated
 EXP = "#dc2626"  # experimental

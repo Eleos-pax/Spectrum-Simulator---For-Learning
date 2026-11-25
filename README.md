@@ -48,6 +48,24 @@ the structure, the drawing, uploaded files, axis ranges or any other setting.
   and save any chart as PNG.
 - Every simulated spectrum can be exported as CSV.
 
+## Desktop shortcut (no terminal needed)
+
+<img src="launcher/icon.png" width="96" align="right" alt="Spectrum Simulator icon">
+
+1. Install [Python 3.10 or newer](https://www.python.org/downloads/) (on Windows, tick **“Add python.exe to PATH”**).
+2. Download this repository (green **Code** button → **Download ZIP**) and unzip it somewhere permanent,
+   for example `Documents/Spectrum-Simulator`.
+3. Double-click the installer for your system:
+   - **Windows:** `install_shortcut_windows.bat` → creates **Spectrum Simulator** on the Desktop and in the Start menu.
+   - **macOS:** `install_shortcut_macos.command` → creates **Spectrum Simulator.app** in `~/Applications` and on the Desktop
+     (the first time, right-click → *Open* if macOS warns about an unidentified developer).
+   - **Linux:** `install_shortcut_linux.sh` → adds it to the applications menu and the Desktop.
+4. Double-click the **Spectrum Simulator** icon. The first launch creates a private Python environment
+   (`.venv/`) and installs the dependencies, which takes a few minutes and needs internet. After that, it starts in
+   seconds and opens in your browser. Close the small console window to quit the app.
+
+If you move the folder, run the installer again so the shortcut points to the new location.
+
 ## Installation
 
 Requires Python 3.10 or newer.
@@ -77,6 +95,7 @@ spectra/databases.py   PubChem and NIST WebBook clients, JCAMP-DX reader
 spectra/nmr.py         ¹H / ¹³C NMR prediction (additive increments)
 spectra/i18n.py        Spanish / English interface text and label translation
 examples/              Example instrument export for testing the upload
+launcher/              Desktop launcher, shortcut installer and app icon (PNG / ICO / ICNS)
 ```
 
 ## How the spectra are simulated (and their limits)
