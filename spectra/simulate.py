@@ -234,13 +234,23 @@ def _conjugated_systems(mol):
                     seen.add(j)
                     stack.append(j)
         sub = [b for b in mol.GetBonds() if b.GetBeginAtomIdx() in comp and b.GetEndAtomIdx() in comp]
-        arom_bonds = [b for b in sub if b.GetIsAromatic()]
-        npi = sum(1 for b in sub if b.GetBondType() in (Chem.BondType.DOUBLE, Chem.BondType.TRIPLE)) + len(arom_bonds) / 2
+        # π bonds: non-aromatic double/triple bonds + one per two aromatic atoms (benzene 3, naphthalene 5, anthracene 7)
+        n_arom_atoms = sum(1 for i in comp if mol.GetAtomWithIdx(i).GetIsAromatic())
+        npi = sum(1 for b in sub if not b.GetIsAromatic() and b.GetBondType() in (Chem.BondType.DOUBLE, Chem.BondType.TRIPLE)) + n_arom_atoms // 2
         pairs = [frozenset((b.GetBeginAtom().GetSymbol(), b.GetEndAtom().GetSymbol())) for b in sub if b.GetBondType() == Chem.BondType.DOUBLE]
         has_co = frozenset(("C", "O")) in pairs
         has_no2 = frozenset(("N", "O")) in pairs or any(mol.GetAtomWithIdx(i).GetFormalCharge() == 1 and mol.GetAtomWithIdx(i).GetSymbol() == "N" for i in comp)
         azo = frozenset(("N",)) in pairs
-        aro_rings = sum(1 for r in ri.AtomRings() if all(i in comp and mol.GetAtomWithIdx(i).GetIsAromatic() for i in r))
+        # size of the largest cluster of fused aromatic rings (rings that share atoms);
+        # separate rings (e.g. the B ring of a flavonoid) count as extra conjugation instead
+        rings = [set(r) for r in ri.AtomRings() if all(i in comp and mol.GetAtomWithIdx(i).GetIsAromatic() for i in r)]
+        clusters = []
+        for r in rings:
+            merged = [c for c in clusters if c["atoms"] & r]
+            for c in merged:
+                clusters.remove(c)
+            clusters.append({"atoms": set().union(r, *[c["atoms"] for c in merged]), "n": 1 + sum(c["n"] for c in merged)})
+        aro_rings = max((c["n"] for c in clusters), default=0)
         aux = 0.0
         for i in comp:
             for nb in mol.GetAtomWithIdx(i).GetNeighbors():
@@ -270,14 +280,15 @@ def _wl_rgb(l):
 
 def simulate_uv(mol: Chem.Mol) -> UVResult:
     bands = []
-    polyene = lambda n: 171 + 46 * max(0.0, n - 1) ** .85
+    polyene = lambda n: 171 + 52 * max(0.0, n - 1) ** .75  # ethylene 171, butadiene ~223, β-carotene ~460 nm
     for s in _conjugated_systems(mol):
         n_eff = s["npi"] + s["aux"]
         if s["aro_rings"]:
             f = min(s["aro_rings"], 4)
             extra = max(0.0, s["npi"] - (3 * f - (f - 1)))  # pi bonds outside the fused rings
-            lB = [254, 286, 375, 440][f - 1] + 22 * extra + 12 * s["aux"]
-            lE = [204, 221, 252, 275][f - 1] + 25 * extra + 8 * s["aux"]
+            # extra conjugation and auxochromes shift the bands to the red, with diminishing returns
+            lB = [254, 286, 375, 440][f - 1] + 45 * np.log1p(extra) + 10 * min(s["aux"], 3.0)
+            lE = [204, 221, 252, 275][f - 1] + 35 * np.log1p(extra) + 6 * min(s["aux"], 3.0)
             epsB = (250 if f == 1 else 5000) * (1 + 3 * min(1.0, extra + s["aux"] / 2))
             bands.append((lE, 8000 * f * (1 + .5 * extra), "π→π* (banda E₂/K)"))
             bands.append((lB, epsB, "π→π* banda B (estructura fina)" if f == 1 else "π→π* banda p/B"))

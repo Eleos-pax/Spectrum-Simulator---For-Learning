@@ -297,7 +297,7 @@ def read_user_file(raw: bytes, name: str) -> UserTable:
     keep = ~np.all(np.isnan(data), axis=0)
     data = data[:, keep]
     if header and len(header) >= ncol:
-        cols = [h or f"col {i + 1}" for h, k in zip(header, keep) if k]
+        cols = [h or f"col {i + 1}" for i, (h, k) in enumerate(zip(header, keep)) if k]
     else:
         cols = [f"col {i + 1}" for i in range(data.shape[1])]
     data = data[~np.isnan(data[:, 0])]

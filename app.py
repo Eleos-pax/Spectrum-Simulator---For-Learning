@@ -14,6 +14,9 @@ the language or the entry mode never loses information.
 """
 from __future__ import annotations
 
+import html
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +25,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 from rdkit import Chem
-from rdkit.Chem import Crippen, Descriptors, Draw, Lipinski, rdMolDescriptors
+from rdkit.Chem import Crippen, Draw, Lipinski, rdMolDescriptors
 from rdkit.Chem.Draw import rdMolDraw2D
 
 from spectra import databases as db
@@ -58,6 +61,9 @@ KEEP = st.session_state.setdefault("_keep", {
     "name": "acetophenone", "smiles_text": DEFAULT_SMILES, "example": 0, "drawn": None,
     "want_exp": True, "overlay": "overlay", "labels": True, "section": "info", "nucleus": "1H", "mhz": 400, "integral": True, "axes": {},
     "log_axis": True, "mirror": True, "ir_pick": 0, "not_found": None,
+    "extract_name": "", "refs": [], "ref_error": None,
+    "peaks": {"uid": "peaks", "on": True, "sim": False, "nist": True, "user": True, "ref": False, "n": 6, "prom": 5.0},
+    "style": {"uid": "style", "title": "", "font": 14, "lw": 1.6, "grid": True, "legend": "top", "height": 480, "fmt": "png", "visband": True},
     "user": {"ir": [], "uv": [], "ms": [], "nmr": []}, "upload_n": 0, "uid": 0, "read_errors": [],
 })
 
@@ -94,6 +100,19 @@ def T(key: str, **kw) -> str:
 
 
 L = lambda s: label(s, KEEP["lang"])
+
+
+def item_widget(item, field, factory, *args, **kw):
+    """Draw a widget bound to item[field]; its value persists even if the widget disappears."""
+    wkey = f"u_{item['uid']}_{field}_{KEEP['lang']}"
+    if st.session_state.get(wkey, object()) != item[field]:
+        st.session_state[wkey] = item[field]
+
+    def _cb():
+        item[field] = st.session_state[wkey]
+    return factory(*args, key=wkey, on_change=_cb, **kw)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +171,31 @@ def on_example():
     KEEP["current"] = EXAMPLES[KEEP["example"]][2]
 
 
+def on_add_ref():
+    q = (st.session_state.get("ref_query") or "").strip()
+    KEEP["ref_error"] = None
+    if not q:
+        return
+    smiles, label = None, q
+    looks_smiles = any(c in q for c in "=#()[]@/\\0123456789") or q.isupper()
+    if looks_smiles and Chem.MolFromSmiles(q) is not None:
+        smiles = q
+        comp = cached_pubchem(q, "smiles")
+        if comp:
+            label = comp.name
+    else:
+        comp = cached_pubchem(q, "name")
+        if comp and comp.smiles:
+            smiles, label = comp.smiles, comp.name
+        elif Chem.MolFromSmiles(q) is not None:
+            smiles = q
+    if smiles is None:
+        KEEP["ref_error"] = q
+        return
+    KEEP["uid"] += 1
+    KEEP["refs"].append({"uid": KEEP["uid"], "label": label, "smiles": smiles, "show": True})
+
+
 def on_mode():
     KEEP["mode"] = st.session_state[wkey_for("mode")]
     KEEP["not_found"] = None
@@ -167,7 +211,7 @@ sb.title("🧪 Spectrum Simulator")
 sb.segmented_control(T("language"), list(LANGS), format_func=LANGS.get, key=keep("lang"), on_change=save("lang"))
 sb.caption(T("subtitle"))
 
-MODES = {"name": "m_name", "draw": "m_draw", "smiles": "m_smiles", "example": "m_example"}
+MODES = {"name": "m_name", "draw": "m_draw", "smiles": "m_smiles", "example": "m_example", "extract": "m_extract"}
 sb.radio(T("how"), list(MODES), format_func=lambda m: T(MODES[m]), key=keep("mode"), on_change=on_mode)
 mode = KEEP["mode"]
 
@@ -194,9 +238,28 @@ elif mode == "smiles":
     with sb.form("smiles_form", border=False):
         st.text_area(T("smiles_input"), key=keep("smiles_text"), height=110)
         st.form_submit_button(T("apply"), on_click=on_smiles_apply, use_container_width=True)
+elif mode == "extract":
+    sb.text_input(T("extract_name"), key=keep("extract_name"), on_change=save("extract_name"), placeholder=T("extract_default"))
+    sb.caption(T("extract_hint"))
 else:
     idx = 0 if KEEP["lang"] == "es" else 1
     sb.selectbox(T("compound"), range(len(EXAMPLES)), format_func=lambda i: EXAMPLES[i][idx], key=keep("example"), on_change=on_example)
+
+with sb.expander(f"{T('refs')} ({len(KEEP['refs'])})", expanded=mode == "extract"):
+    st.caption(T("refs_help"))
+    with st.form("ref_form", border=False, clear_on_submit=True):
+        st.text_input(T("ref_input"), key="ref_query")
+        st.form_submit_button(T("add"), on_click=on_add_ref, use_container_width=True)
+    if KEEP["ref_error"]:
+        st.warning(T("ref_error", q=KEEP["ref_error"]))
+    for r in list(KEEP["refs"]):
+        rc = st.columns([3, 1])
+        with rc[0]:
+            item_widget(r, "show", st.checkbox, r["label"])
+        with rc[1]:
+            if st.button("✕", key=f"rmref_{r['uid']}"):
+                KEEP["refs"].remove(r)
+                st.rerun()
 
 sb.divider()
 want_exp = sb.toggle(T("want_exp"), key=keep("want_exp"), on_change=save("want_exp"))
@@ -207,61 +270,80 @@ show_labels = sb.toggle(T("labels"), key=keep("labels"), on_change=save("labels"
 # ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
-if not KEEP["current"]:
-    st.info(T("empty"))
-    st.stop()
-try:
-    A = cached_analysis(KEEP["current"])
-except ValueError:
-    st.error(T("bad_structure"))
-    st.stop()
-
-compound = None
-if A.inchikey:
-    with st.spinner(T("finding")):
-        compound = cached_pubchem(A.inchikey, "inchikey")
-
+A, compound = None, None
 exp = {"IR": [], "Mass": None, "UVVis": None}
-if want_exp and compound and compound.cas:
-    with st.spinner(T("downloading")):
-        exp = cached_nist(compound.cas)
+if mode != "extract":
+    if not KEEP["current"]:
+        st.info(T("empty"))
+        st.stop()
+    try:
+        A = cached_analysis(KEEP["current"])
+    except ValueError:
+        st.error(T("bad_structure"))
+        st.stop()
+    if A.inchikey:
+        with st.spinner(T("finding")):
+            compound = cached_pubchem(A.inchikey, "inchikey")
+    if want_exp and compound and compound.cas:
+        with st.spinner(T("downloading")):
+            exp = cached_nist(compound.cas)
 n_exp = len(exp["IR"]) + (exp["Mass"] is not None) + (exp["UVVis"] is not None)
+
+REFS = []  # (label, Analysis) for the visible reference compounds
+for r in KEEP["refs"]:
+    if r["show"]:
+        try:
+            REFS.append((r["label"], cached_analysis(r["smiles"])))
+        except ValueError:
+            pass
+
+
+def default_title():
+    if mode == "extract":
+        return KEEP["extract_name"].strip() or T("extract_default")
+    return compound.name if compound else ""
+
 
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-c1, c2 = st.columns([1, 2.2], gap="large")
-with c1:
-    st.image(Draw.MolToImage(A.mol, size=(420, 320)), use_container_width=True)
-with c2:
-    st.subheader(compound.name if compound else T("unknown"))
-    m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(f"**{T('formula')}**<br><span style='font-size:1.4rem'>{A.formula_html}</span>", unsafe_allow_html=True)
-    m2.metric(T("molar_mass"), f"{A.mw:.2f}")
-    m3.metric(T("exact_mass"), f"{A.exact_mass:.4f}")
-    m4.metric(T("dbe"), f"{A.dbe:g}")
-    st.code(A.smiles, language=None)
-    if compound:
-        links = [f"[PubChem CID {compound.cid}]({compound.url})"]
-        if compound.cas:
-            links.append(f"CAS {compound.cas} · [NIST WebBook]({db.nist_page(compound.cas)})")
-        st.markdown(" · ".join(links))
-        if want_exp and compound.cas:
-            st.markdown(f"{T('found')}: **IR {len(exp['IR'])} · MS {int(exp['Mass'] is not None)} · UV-Vis {int(exp['UVVis'] is not None)}**")
-        elif want_exp:
-            st.markdown(f"<span class='note'>{T('no_cas')}</span>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<span class='note'>{T('new_structure')}</span>", unsafe_allow_html=True)
-    legend = f"<span class='legend-sim'>━ {T('sim')}</span>"
-    if n_exp:
-        legend += f" &nbsp; <span class='legend-exp'>━ {T('exp')}</span>"
-    st.markdown(legend, unsafe_allow_html=True)
+if A is not None:
+    c1, c2 = st.columns([1, 2.2], gap="large")
+    with c1:
+        st.image(Draw.MolToImage(A.mol, size=(420, 320)), use_container_width=True)
+    with c2:
+        st.subheader(compound.name if compound else T("unknown"))
+        m1, m2, m3, m4 = st.columns(4)
+        m1.markdown(f"**{T('formula')}**<br><span style='font-size:1.4rem'>{A.formula_html}</span>", unsafe_allow_html=True)
+        m2.metric(T("molar_mass"), f"{A.mw:.2f}")
+        m3.metric(T("exact_mass"), f"{A.exact_mass:.4f}")
+        m4.metric(T("dbe"), f"{A.dbe:g}")
+        st.code(A.smiles, language=None)
+        if compound:
+            links = [f"[PubChem CID {compound.cid}]({compound.url})"]
+            if compound.cas:
+                links.append(f"CAS {compound.cas} · [NIST WebBook]({db.nist_page(compound.cas)})")
+            st.markdown(" · ".join(links))
+            if want_exp and compound.cas:
+                st.markdown(f"{T('found')}: **IR {len(exp['IR'])} · MS {int(exp['Mass'] is not None)} · UV-Vis {int(exp['UVVis'] is not None)}**")
+            elif want_exp:
+                st.markdown(f"<span class='note'>{T('no_cas')}</span>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<span class='note'>{T('new_structure')}</span>", unsafe_allow_html=True)
+        legend = f"<span class='legend-sim'>━ {T('sim')}</span>"
+        if n_exp:
+            legend += f" &nbsp; <span class='legend-exp'>━ {T('exp')}</span>"
+        st.markdown(legend, unsafe_allow_html=True)
+else:
+    st.subheader("🧫 " + default_title())
+    st.caption(T("extract_hint"))
+    if KEEP["refs"]:
+        st.markdown(" ".join(f"<span class='chip'>{html.escape(r['label'])}</span>" for r in KEEP["refs"] if r["show"]), unsafe_allow_html=True)
 
 SECTIONS = {"info": "tab_info", "ir": "tab_ir", "uv": "tab_uv", "ms": "tab_ms", "nmr": "tab_nmr", "help": "tab_help"}
 st.segmented_control(T("section"), list(SECTIONS), format_func=lambda s: T(SECTIONS[s]), key=keep("section"),
                      on_change=save("section"), label_visibility="collapsed")
 section = KEEP["section"]
-
 
 
 # ---------------------------------------------------------------------------
@@ -284,17 +366,6 @@ def guess_ytype(sec, header, y):
     if sec == "ir":
         return "yt_T1" if np.nanmax(y) <= 1.5 else "yt_T"
     return "yt_abs"
-
-
-def item_widget(item, field, factory, *args, **kw):
-    """Draw a widget bound to item[field]; its value persists even if the widget disappears."""
-    wkey = f"u_{item['uid']}_{field}_{KEEP['lang']}"
-    if st.session_state.get(wkey, object()) != item[field]:
-        st.session_state[wkey] = item[field]
-
-    def _cb():
-        item[field] = st.session_state[wkey]
-    return factory(*args, key=wkey, on_change=_cb, **kw)
 
 
 def user_panel(sec):
@@ -364,7 +435,10 @@ def user_series(sec, sim_max=None):
                 if t == "yt_T":
                     y, t = -np.log10(np.clip(y, 1e-3, None) / 100), "yt_abs"
                 if t == "yt_abs":
-                    y = y / (item["conc"] * item["path"]) if item["conc"] > 0 else y / max(np.nanmax(y), 1e-9) * sim_max
+                    if item["conc"] > 0:
+                        y = y / (item["conc"] * item["path"])  # Beer-Lambert: ε = A / (c·b)
+                    elif sim_max is not None:
+                        y = y / max(np.nanmax(y), 1e-9) * sim_max  # scale to the simulated maximum
                 elif t == "yt_logeps":
                     y = 10 ** y
             elif sec == "nmr":
@@ -374,11 +448,178 @@ def user_series(sec, sim_max=None):
             yield f"{item['name']} · {item['cols'][yc]}", x, y
 
 
-PLOT_CONFIG = {"scrollZoom": True, "displaylogo": False, "modeBarButtonsToAdd": ["drawline", "eraseshape"],
-               "toImageButtonOptions": {"format": "png", "scale": 3}}
+# ---------------------------------------------------------------------------
+# Charts: series, peak marking, style
+# ---------------------------------------------------------------------------
+REF_COLORS = ["#9333ea", "#ea580c", "#0d9488", "#be123c", "#4f46e5", "#ca8a04"]
 
 
-def show_chart(fig, sec, xdef, ydef=None, reverse=False):
+@dataclass
+class Series:
+    name: str
+    x: np.ndarray
+    y: np.ndarray
+    kind: str          # sim, ref, nist, user
+    color: str
+    sticks: bool = False
+    row: int = 1
+    sign: int = 1
+
+
+def find_peaks(x, y, n, prom_pct, minima=False, sticks=False):
+    """Simple peak picking: local maxima (or minima) ranked by prominence. Returns [(x, y)]."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    ok = ~(np.isnan(x) | np.isnan(y))
+    x, y = x[ok], y[ok]
+    if len(x) < 3:
+        return []
+    o = np.argsort(x)
+    x, y = x[o], y[o]
+    v = -y if minima else y
+    span = float(v.max() - v.min()) or 1.0
+    if sticks:
+        idx = [i for i in np.argsort(-v) if v[i] - v.min() >= prom_pct / 100 * span][:n]
+        return [(x[i], y[i]) for i in idx]
+    cand = np.where((v[1:-1] > v[:-2]) & (v[1:-1] >= v[2:]))[0] + 1
+    cand = cand[np.argsort(-v[cand])][:400]
+    scored = []
+    for i in cand:
+        left = np.where(v[:i] > v[i])[0]
+        right = np.where(v[i + 1:] > v[i])[0]
+        lo = left[-1] if len(left) else 0
+        hi = i + 1 + right[0] if len(right) else len(v) - 1
+        prom = v[i] - max(v[lo:i + 1].min(), v[i:hi + 1].min())
+        if prom >= prom_pct / 100 * span:
+            scored.append((prom, i))
+    scored.sort(reverse=True)
+    return [(x[i], y[i]) for _, i in scored[:n]]
+
+
+def style_layout(fig, xtitle, ytitle, reverse_x, stacked):
+    stl = KEEP["style"]
+    legend = {"top": dict(orientation="h", y=1.02, yanchor="bottom", x=0),
+              "right": dict(orientation="v", y=1, x=1.02, xanchor="left")}.get(stl["legend"])
+    title = (stl["title"] or default_title()).strip()
+    grid = "rgba(128,128,128,.18)" if stl["grid"] else "rgba(0,0,0,0)"
+    fig.update_layout(
+        height=int(stl["height"]) + (180 if stacked else 0), template="simple_white",
+        margin=dict(l=70, r=30 if stl["legend"] != "right" else 200, t=80 if title else 40, b=60),
+        title=dict(text=html.escape(title), x=0.5, xanchor="center", font=dict(size=int(stl["font"]) + 6)) if title else None,
+        showlegend=stl["legend"] != "none", legend=legend, hovermode="x unified",
+        font=dict(family="Arial, Helvetica, sans-serif", size=int(stl["font"]), color="#111827"),
+    )
+    fig.update_xaxes(showgrid=stl["grid"], gridcolor=grid, ticks="outside", mirror=True, showline=True, linecolor="#111827")
+    fig.update_yaxes(showgrid=stl["grid"], gridcolor=grid, ticks="outside", mirror=True, showline=True, linecolor="#111827",
+                     title_text=ytitle)
+    if stacked:
+        fig.update_xaxes(title_text=xtitle, row=2, col=1)
+    else:
+        fig.update_xaxes(title_text=xtitle)
+    if reverse_x:
+        fig.update_xaxes(autorange="reversed")
+
+
+def build_fig(series, xtitle, ytitle, reverse_x=False, mirror=False):
+    lw = float(KEEP["style"]["lw"])
+    has_top = any(s.kind in ("sim", "ref") for s in series)
+    has_bottom = any(s.kind in ("nist", "user") for s in series)
+    stacked = (not overlay) and has_top and has_bottom and not mirror
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=.07,
+                        subplot_titles=(T("sim"), T("exp_any"))) if stacked else go.Figure()
+    for s in series:
+        s.row = 2 if stacked and s.kind in ("nist", "user") else 1
+        s.sign = -1 if mirror and s.kind in ("nist", "user") else 1
+        y = s.sign * np.asarray(s.y, float)
+        dash = "dash" if s.kind == "ref" else None
+        kw = dict(row=s.row, col=1) if stacked else {}
+        if s.sticks and len(s.x) <= 600:
+            xs, ys = [], []
+            for a, b in zip(s.x, y):
+                xs += [a, a, None]
+                ys += [0, b, None]
+            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name=s.name, hoverinfo="skip",
+                                     line=dict(color=s.color, width=lw + .6, dash=dash)), **kw)
+            fig.add_trace(go.Scatter(x=s.x, y=y, mode="markers", marker=dict(size=4, color=s.color), showlegend=False,
+                                     hovertemplate=f"{html.escape(s.name)}<br>m/z %{{x}}<br>%{{y:.0f}}%<extra></extra>"), **kw)
+        else:
+            fig.add_trace(go.Scatter(x=s.x, y=y, mode="lines", name=s.name, line=dict(color=s.color, width=lw, dash=dash)), **kw)
+    style_layout(fig, xtitle, ytitle, reverse_x, stacked)
+    if mirror:
+        fig.update_layout(hovermode="closest")
+    fig._stacked = stacked
+    return fig
+
+
+def mark_peaks(fig, series, sec, fmt, minima=False, unit=""):
+    """Annotate automatically picked peaks on the chosen series; returns rows for the peak table."""
+    pk = KEEP["peaks"]
+    rows = []
+    if not pk["on"]:
+        return rows
+    for s in series:
+        if not pk.get(s.kind, False):
+            continue
+        found = find_peaks(s.x, s.y, int(pk["n"]), float(pk["prom"]), minima=minima, sticks=s.sticks)
+        if not found:
+            continue
+        top_y = max((yy for _, yy in found), key=lambda v: -v if minima else v)
+        for xx, yy in sorted(found, key=lambda p: p[0]):
+            is_max = yy == top_y and sec == "uv"
+            text = ("λmax " if is_max else "") + fmt.format(xx) + unit
+            kw = dict(row=s.row, col=1) if getattr(fig, "_stacked", False) else {}
+            down = minima or s.sign < 0
+            fig.add_annotation(x=xx, y=s.sign * yy, text=f"<b>{text}</b>" if is_max else text, showarrow=True, arrowhead=0,
+                               arrowcolor=s.color, ax=0, ay=26 if down else -26,
+                               font=dict(size=max(9, int(KEEP["style"]["font"]) - 2), color=s.color), **kw)
+            rows.append((s.name, fmt.format(xx) + unit, f"{yy:.3g}"))
+    return rows
+
+
+def chart_controls(sec, rows):
+    """Peak table and the expanders for peak marking, style and axes (all persisted)."""
+    pk, stl = KEEP["peaks"], KEEP["style"]
+    if rows:
+        with st.expander(f"{T('picked')} ({len(rows)})"):
+            df = pd.DataFrame(rows, columns=[T("series"), T("position"), T("intensity")])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+            download(df, f"{sec}_peaks.csv")
+    with st.expander(T("peaks")):
+        c = st.columns([1.2, 1, 1, 1, 1])
+        with c[0]:
+            item_widget(pk, "on", st.toggle, T("mark_on"))
+        for col, k in zip(c[1:], ("sim", "nist", "user", "ref")):
+            with col:
+                item_widget(pk, k, st.checkbox, T("k_" + k))
+        c2 = st.columns(2)
+        with c2[0]:
+            item_widget(pk, "n", st.slider, T("n_peaks"), 1, 25)
+        with c2[1]:
+            item_widget(pk, "prom", st.slider, T("prom"), 0.5, 50.0, step=0.5)
+    with st.expander(T("style")):
+        item_widget(stl, "title", st.text_input, T("chart_title"), placeholder=default_title())
+        c = st.columns(4)
+        with c[0]:
+            item_widget(stl, "font", st.slider, T("font"), 9, 24)
+        with c[1]:
+            item_widget(stl, "lw", st.slider, T("lw"), 0.5, 4.0, step=0.1)
+        with c[2]:
+            item_widget(stl, "height", st.slider, T("height"), 320, 900, step=20)
+        with c[3]:
+            item_widget(stl, "fmt", st.selectbox, T("fmt"), ["png", "svg", "jpeg"])
+        c = st.columns(3)
+        with c[0]:
+            item_widget(stl, "legend", st.selectbox, T("legend_pos"), ["top", "right", "none"], format_func=lambda v: T("lg_" + v))
+        with c[1]:
+            item_widget(stl, "grid", st.checkbox, T("grid"))
+        with c[2]:
+            if sec == "uv":
+                item_widget(stl, "visband", st.checkbox, T("visband"))
+
+
+PLOT_CONFIG = {"scrollZoom": True, "displaylogo": False, "modeBarButtonsToAdd": ["drawline", "eraseshape"]}
+
+
+def show_chart(fig, sec, xdef, ydef=None, reverse=False, rows=()):
     """Draw a chart with zoom enabled and user-editable axis ranges (kept in KEEP["axes"])."""
     ax = KEEP["axes"].setdefault(sec, {"uid": "ax_" + sec, "auto": True, "x0": float(xdef[0]), "x1": float(xdef[1]),
                                        "y0": float(ydef[0]) if ydef else 0.0, "y1": float(ydef[1]) if ydef else 1.0})
@@ -390,153 +631,155 @@ def show_chart(fig, sec, xdef, ydef=None, reverse=False):
     if yr:
         fig.update_yaxes(range=yr, autorange=False)
     # uirevision keeps the user's zoom across reruns until the data or the ranges change
-    fig.update_layout(dragmode="zoom", uirevision=f"{sec}|{KEEP['current']}|{ax['auto']}|{xr}|{yr}|{KEEP['overlay']}")
-    st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG | {"toImageButtonOptions": {"format": "png", "scale": 3, "filename": f"{sec}_spectrum"}})
+    fig.update_layout(dragmode="zoom", uirevision=f"{sec}|{KEEP['current']}|{mode}|{ax['auto']}|{xr}|{yr}|{KEEP['overlay']}")
+    stl = KEEP["style"]
+    name = re.sub(r"[^\w-]+", "_", (stl["title"] or default_title() or "spectrum"))[:40]
+    st.plotly_chart(fig, use_container_width=True, config=PLOT_CONFIG | {"toImageButtonOptions": {
+        "format": stl["fmt"], "scale": 3, "filename": f"{name}_{sec}"}})
+    chart_controls(sec, list(rows))
     with st.expander(T("axes")):
         c = st.columns([1.2, 1, 1, 1, 1])
         with c[0]:
             item_widget(ax, "auto", st.checkbox, T("auto_range"))
-        for col, key, name in ((c[1], "x0", "X min"), (c[2], "x1", "X max"), (c[3], "y0", "Y min"), (c[4], "y1", "Y max")):
+        for col, key, nm in ((c[1], "x0", "X min"), (c[2], "x1", "X max"), (c[3], "y0", "Y min"), (c[4], "y1", "Y max")):
             with col:
-                item_widget(ax, key, st.number_input, name, disabled=ax["auto"], format="%.3f")
+                item_widget(ax, key, st.number_input, nm, disabled=ax["auto"], format="%.3f")
         st.caption(T("zoom_help"))
-
-
-def stacked_or_overlay(traces_sim, traces_exp, xtitle, ytitle, reverse_x=False):
-    if overlay or not traces_exp:
-        return base_layout(go.Figure(traces_sim + traces_exp), xtitle, ytitle, reverse_x)
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=.06, subplot_titles=(T("sim"), T("exp_any")))
-    for t in traces_sim:
-        fig.add_trace(t, 1, 1)
-    for t in traces_exp:
-        fig.add_trace(t, 2, 1)
-    base_layout(fig, None, ytitle, reverse_x, height=620)
-    fig.update_xaxes(autorange="reversed" if reverse_x else True)
-    fig.update_xaxes(title_text=xtitle, row=2, col=1)
-    return fig
 
 
 def download(df, name):
     st.download_button(T("download"), df.to_csv(index=False).encode(), file_name=name, mime="text/csv", key="dl_" + name)
 
 
+def ref_series(get, kind="ref"):
+    """Series for the reference compounds; get(analysis) -> (x, y)."""
+    out = []
+    for k, (lab, an) in enumerate(REFS):
+        x, y = get(an)
+        out.append(Series(lab, np.asarray(x), np.asarray(y), kind, REF_COLORS[k % 6]))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # IR
 # ---------------------------------------------------------------------------
 if section == "ir":
-    ir = A.ir
-    sim = [go.Scatter(x=ir.x, y=ir.y, name=T("ir_sim"), line=dict(color=SIM, width=1.6))]
-    exp_tr = []
+    series = []
+    if A is not None:
+        series.append(Series(T("ir_sim"), A.ir.x, A.ir.y, "sim", SIM))
+    series += ref_series(lambda an: (an.ir.x, an.ir.y))
     if exp["IR"]:
         if KEEP["ir_pick"] >= len(exp["IR"]):
             KEEP["ir_pick"] = 0
-
         opts = [f"{i + 1}. {s.meta.get('STATE', T('state_nd'))} — {s.meta.get('ORIGIN', '')[:50]}" for i, s in enumerate(exp["IR"])]
         st.selectbox(T("exp_pick"), range(len(opts)), format_func=lambda i: opts[i], key=keep("ir_pick"), on_change=save("ir_pick"))
         ex, ey = db.ir_to_transmittance(exp["IR"][KEEP["ir_pick"]])
-        exp_tr = [go.Scatter(x=ex, y=ey, name=T("ir_exp"), line=dict(color=EXP, width=1.3))]
+        series.append(Series(T("ir_exp"), ex, ey, "nist", EXP))
     for k, (nm, ux, uy) in enumerate(user_series("ir")):
-        exp_tr.append(go.Scatter(x=ux, y=uy, name=nm, line=dict(color=USER_COLORS[k % 6], width=1.3)))
-    fig = stacked_or_overlay(sim, exp_tr, T("wavenumber"), T("transmittance"), reverse_x=True)
-    if show_labels:
-        sub = {} if overlay or not exp_tr else {"row": 1, "col": 1}
-        for c, w, i, lab in ir.peaks[:14]:
-            yv = float(np.interp(c, ir.x[::-1], ir.y[::-1]))
-            fig.add_annotation(x=c, y=yv, text=f"{c:.0f}", showarrow=True, arrowhead=0, ay=28, ax=0, font=dict(size=10, color=SIM), **sub)
-    show_chart(fig, "ir", (400, 4000), (0, 105), reverse=True)
-    st.markdown(f"**{T('groups')}:** " + " ".join(f"<span class='chip'>{L(g)}</span>" for g in ir.groups), unsafe_allow_html=True)
-    strength = lambda i: T("strong") if i > .7 else T("medium") if i > .4 else T("weak")
-    df = pd.DataFrame([(round(c), L(lab), strength(i)) for c, w, i, lab in ir.peaks], columns=["ν (cm⁻¹)", T("assignment"), T("intensity")])
-    st.dataframe(df, hide_index=True, use_container_width=True)
-    download(pd.DataFrame({"wavenumber_cm-1": ir.x, "transmittance_%": ir.y}), "ir_simulated.csv")
+        series.append(Series(nm, ux, uy, "user", USER_COLORS[k % 6]))
+    fig = build_fig(series, T("wavenumber"), T("transmittance"), reverse_x=True)
+    if show_labels and A is not None:
+        kw = {"row": 1, "col": 1} if fig._stacked else {}
+        for c, w, i, lab in A.ir.peaks[:14]:
+            yv = float(np.interp(c, A.ir.x[::-1], A.ir.y[::-1]))
+            fig.add_annotation(x=c, y=yv, text=f"{c:.0f}", showarrow=True, arrowhead=0, ay=28, ax=0, font=dict(size=10, color=SIM), **kw)
+    rows = mark_peaks(fig, series, "ir", "{:.0f}", minima=True, unit=" cm⁻¹")
+    show_chart(fig, "ir", (400, 4000), (0, 105), reverse=True, rows=rows)
+    if A is not None:
+        st.markdown(f"**{T('groups')}:** " + " ".join(f"<span class='chip'>{L(g)}</span>" for g in A.ir.groups), unsafe_allow_html=True)
+        strength = lambda i: T("strong") if i > .7 else T("medium") if i > .4 else T("weak")
+        df = pd.DataFrame([(round(c), L(lab), strength(i)) for c, w, i, lab in A.ir.peaks], columns=["ν (cm⁻¹)", T("assignment"), T("intensity")])
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        download(pd.DataFrame({"wavenumber_cm-1": A.ir.x, "transmittance_%": A.ir.y}), "ir_simulated.csv")
 
 # ---------------------------------------------------------------------------
 # UV-Vis
 # ---------------------------------------------------------------------------
 elif section == "uv":
-    uv = A.uv
-    log_scale = st.toggle(T("log_axis"), key=keep("log_axis"), on_change=save("log_axis"))
+    raw = A is None and not REFS  # extract without references: plot the instrument units as they are
+    log_scale = False
+    if not raw:
+        log_scale = st.toggle(T("log_axis"), key=keep("log_axis"), on_change=save("log_axis"))
     ytr = (lambda v: np.log10(np.maximum(v, 1))) if log_scale else (lambda v: v)
-    sim = [go.Scatter(x=uv.x, y=ytr(uv.y), name=T("uv_sim"), line=dict(color=SIM, width=2), fill="tozeroy", fillcolor="rgba(37,99,235,.08)")]
-    exp_tr = []
+    series = []
+    if A is not None:
+        series.append(Series(T("uv_sim"), A.uv.x, ytr(A.uv.y), "sim", SIM))
+    series += ref_series(lambda an: (an.uv.x, ytr(an.uv.y)))
     if exp["UVVis"] is not None:
         ux, uy, unit = db.uv_to_epsilon(exp["UVVis"])
         is_eps = unit == "ε"
-        exp_tr = [go.Scatter(x=ux, y=ytr(uy) if is_eps else uy, name=f"{T('uv_exp')} ({unit if is_eps else T('absorbance')})", line=dict(color=EXP, width=1.6))]
-    for k, (nm, ux, uy) in enumerate(user_series("uv", sim_max=float(uv.y.max()))):
-        exp_tr.append(go.Scatter(x=ux, y=ytr(np.maximum(uy, 1e-9)) if log_scale else uy, name=nm, line=dict(color=USER_COLORS[k % 6], width=1.6)))
-    fig = stacked_or_overlay(sim, exp_tr, T("wavelength"), "log ε" if log_scale else "ε (L·mol⁻¹·cm⁻¹)")
-    for lo, hi, col in [(380, 450, "#7c3aed"), (450, 495, "#2563eb"), (495, 570, "#16a34a"), (570, 590, "#eab308"), (590, 620, "#f97316"), (620, 750, "#dc2626")]:
-        fig.add_vrect(x0=lo, x1=hi, fillcolor=col, opacity=.07, line_width=0)
-    if show_labels:
-        for l, e, lab in uv.bands:
-            yv = float(ytr(np.array([max(np.interp(l, uv.x, uv.y), 1)]))[0])
-            fig.add_annotation(x=l, y=yv, text=f"{l:.0f} nm", showarrow=True, ay=-26, ax=0, font=dict(size=10, color=SIM))
-    show_chart(fig, "uv", (180, 750))
-    cc1, cc2 = st.columns([3, 1])
-    with cc1:
-        st.markdown(f"**{T('lmax')}:** {uv.lambda_max:.0f} nm")
-        df = pd.DataFrame([(round(l), f"{e:,.0f}", f"{np.log10(max(e, 1)):.2f}", L(lab)) for l, e, lab in uv.bands], columns=["λ (nm)", "ε", "log ε", T("transition")])
-        st.dataframe(df, hide_index=True, use_container_width=True)
-    with cc2:
-        st.markdown(f"**{T('color')}**")
-        st.markdown(f"<div style='width:100%;height:90px;border-radius:12px;border:1px solid rgba(128,128,128,.4);background:{uv.color}'></div>", unsafe_allow_html=True)
-        st.caption(T("color_note"))
-    if exp["UVVis"] is not None:
-        st.caption(f"{T('exp')}: " + exp["UVVis"].describe())
-    download(pd.DataFrame({"wavelength_nm": uv.x, "epsilon": uv.y}), "uv_simulated.csv")
+        series.append(Series(f"{T('uv_exp')} ({unit if is_eps else T('absorbance')})", ux, ytr(uy) if is_eps else uy, "nist", EXP))
+    maxima = ([float(A.uv.y.max())] if A is not None else []) + [float(an.uv.y.max()) for _, an in REFS]
+    ref_max = max(maxima) if maxima else 1.0
+    for k, (nm, ux, uy) in enumerate(user_series("uv", sim_max=None if raw else ref_max)):
+        series.append(Series(nm, ux, ytr(np.maximum(uy, 1e-9)) if log_scale else uy, "user", USER_COLORS[k % 6]))
+    ytitle = T("raw_abs") if raw else ("log ε" if log_scale else "ε (L·mol⁻¹·cm⁻¹)")
+    fig = build_fig(series, T("wavelength"), ytitle)
+    if KEEP["style"]["visband"]:
+        for lo, hi, col in [(380, 450, "#7c3aed"), (450, 495, "#2563eb"), (495, 570, "#16a34a"), (570, 590, "#eab308"), (590, 620, "#f97316"), (620, 750, "#dc2626")]:
+            fig.add_vrect(x0=lo, x1=hi, fillcolor=col, opacity=.07, line_width=0)
+    if show_labels and A is not None:
+        kw = {"row": 1, "col": 1} if fig._stacked else {}
+        for l, e, lab in A.uv.bands:
+            yv = float(ytr(np.array([max(np.interp(l, A.uv.x, A.uv.y), 1)]))[0])
+            fig.add_annotation(x=l, y=yv, text=f"{l:.0f} nm", showarrow=True, ay=-26, ax=0, font=dict(size=10, color=SIM), **kw)
+    rows = mark_peaks(fig, series, "uv", "{:.0f}", unit=" nm")
+    xs = [float(np.nanmin(s.x)) for s in series if len(s.x)] + [float(np.nanmax(s.x)) for s in series if len(s.x)]
+    xdef = (180, 750) if not raw or not xs else (min(xs), max(xs))
+    show_chart(fig, "uv", xdef, rows=rows)
+    if A is not None:
+        uv = A.uv
+        cc1, cc2 = st.columns([3, 1])
+        with cc1:
+            st.markdown(f"**{T('lmax')}:** {uv.lambda_max:.0f} nm")
+            df = pd.DataFrame([(round(l), f"{e:,.0f}", f"{np.log10(max(e, 1)):.2f}", L(lab)) for l, e, lab in uv.bands], columns=["λ (nm)", "ε", "log ε", T("transition")])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+        with cc2:
+            st.markdown(f"**{T('color')}**")
+            st.markdown(f"<div style='width:100%;height:90px;border-radius:12px;border:1px solid rgba(128,128,128,.4);background:{uv.color}'></div>", unsafe_allow_html=True)
+            st.caption(T("color_note"))
+        if exp["UVVis"] is not None:
+            st.caption(f"{T('exp')}: " + exp["UVVis"].describe())
+        download(pd.DataFrame({"wavelength_nm": uv.x, "epsilon": uv.y}), "uv_simulated.csv")
 
 # ---------------------------------------------------------------------------
 # MS
 # ---------------------------------------------------------------------------
 elif section == "ms":
-    ms = A.ms
-    mz = [p[0] for p in ms.peaks]
-    it = [p[1] for p in ms.peaks]
-
-    def sticks(x, y, color, name, neg=False):
-        xs, ys = [], []
-        for a, b in zip(x, y):
-            xs += [a, a, None]
-            ys += [0, -b if neg else b, None]
-        return go.Scatter(x=xs, y=ys, mode="lines", line=dict(color=color, width=2.2), name=name, hoverinfo="skip")
-
-    traces = [sticks(mz, it, SIM, T("ms_sim")),
-              go.Scatter(x=mz, y=it, mode="markers", marker=dict(size=6, color=SIM), showlegend=False,
-                         text=[L(p[2]) for p in ms.peaks], hovertemplate="m/z %{x}<br>%{y:.0f}%<br>%{text}<extra></extra>")]
+    series = []
+    if A is not None:
+        series.append(Series(T("ms_sim"), np.array([p[0] for p in A.ms.peaks]), np.array([p[1] for p in A.ms.peaks]), "sim", SIM, sticks=True))
+    for k, (lab, an) in enumerate(REFS):
+        series.append(Series(lab, np.array([p[0] for p in an.ms.peaks]), np.array([p[1] for p in an.ms.peaks]), "ref", REF_COLORS[k % 6], sticks=True))
     mirror = False
-    if exp["Mass"] is not None or KEEP["user"]["ms"]:
+    if (exp["Mass"] is not None or KEEP["user"]["ms"]) and (A is not None or REFS):
         mirror = st.toggle(T("mirror"), key=keep("mirror"), on_change=save("mirror"))
     if exp["Mass"] is not None:
         e = exp["Mass"]
-        ey = 100 * e.y / e.y.max()
-        traces.append(sticks(e.x, ey, EXP, T("ms_exp"), neg=mirror))
-        traces.append(go.Scatter(x=e.x, y=-ey if mirror else ey, mode="markers", marker=dict(size=4, color=EXP), showlegend=False,
-                                 hovertemplate="m/z %{x}<br>%{customdata:.0f}% (NIST)<extra></extra>", customdata=ey))
+        series.append(Series(T("ms_exp"), e.x, 100 * e.y / e.y.max(), "nist", EXP, sticks=True))
     for k, (nm, ux, uy) in enumerate(user_series("ms")):
-        col = USER_COLORS[k % 6]
-        if len(ux) <= 600:
-            traces.append(sticks(ux, uy, col, nm, neg=mirror))
-        else:
-            traces.append(go.Scatter(x=ux, y=-uy if mirror else uy, name=nm, line=dict(color=col, width=1.2)))
-    fig = base_layout(go.Figure(traces), "m/z", T("rel_int"))
+        series.append(Series(nm, ux, uy, "user", USER_COLORS[k % 6], sticks=True))
+    fig = build_fig(series, "m/z", T("rel_int"), mirror=mirror)
     fig.update_layout(hovermode="closest")
-
-    if show_labels:
-        for m_, i_, lab in sorted(ms.peaks, key=lambda p: -p[1])[:8]:
+    if show_labels and A is not None:
+        for m_, i_, lab in sorted(A.ms.peaks, key=lambda p: -p[1])[:8]:
             fig.add_annotation(x=m_, y=i_, text=str(m_), showarrow=False, yshift=10, font=dict(size=11, color=SIM))
-    show_chart(fig, "ms", (0, ms.M + 10), (-110 if mirror else 0, 115))
-    a, b = st.columns(2)
-    with a:
-        st.markdown(f"**{T('mol_ion')}:** m/z {ms.M} · " + T("n_rule", p=T("odd") if ms.M % 2 else T("even")))
-        st.markdown(f"**{T('iso_pattern')}**")
-        st.dataframe(pd.DataFrame([(m_, f"{r:.1f}") for m_, r in ms.molecular_ion], columns=["m/z", T("rel_pct")]), hide_index=True, use_container_width=True)
-    with b:
-        st.markdown(f"**{T('fragments')}**")
-        top = sorted(ms.peaks, key=lambda p: -p[1])[:12]
-        st.dataframe(pd.DataFrame([(m_, f"{i_:.0f}", str(ms.M - m_) if m_ < ms.M else "—", L(lab)) for m_, i_, lab in top],
-                                  columns=["m/z", "%", T("loss"), T("interpretation")]), hide_index=True, use_container_width=True)
-    download(pd.DataFrame([(m_, i_, L(lab)) for m_, i_, lab in ms.peaks], columns=["mz", "rel_intensity", "assignment"]), "ms_simulated.csv")
+    rows = mark_peaks(fig, series, "ms", "{:.0f}")
+    xmax = max([float(np.nanmax(s.x)) for s in series if len(s.x)] + [50.0]) + 10
+    show_chart(fig, "ms", (0, xmax), (-110 if mirror else 0, 115), rows=rows)
+    if A is not None:
+        ms = A.ms
+        a, b = st.columns(2)
+        with a:
+            st.markdown(f"**{T('mol_ion')}:** m/z {ms.M} · " + T("n_rule", p=T("odd") if ms.M % 2 else T("even")))
+            st.markdown(f"**{T('iso_pattern')}**")
+            st.dataframe(pd.DataFrame([(m_, f"{r:.1f}") for m_, r in ms.molecular_ion], columns=["m/z", T("rel_pct")]), hide_index=True, use_container_width=True)
+        with b:
+            st.markdown(f"**{T('fragments')}**")
+            top = sorted(ms.peaks, key=lambda p: -p[1])[:12]
+            st.dataframe(pd.DataFrame([(m_, f"{i_:.0f}", str(ms.M - m_) if m_ < ms.M else "—", L(lab)) for m_, i_, lab in top],
+                                      columns=["m/z", "%", T("loss"), T("interpretation")]), hide_index=True, use_container_width=True)
+        download(pd.DataFrame([(m_, i_, L(lab)) for m_, i_, lab in ms.peaks], columns=["mz", "rel_intensity", "assignment"]), "ms_simulated.csv")
 
 # ---------------------------------------------------------------------------
 # NMR
@@ -550,50 +793,68 @@ elif section == "nmr":
         if nucleus == "1H":
             st.select_slider(T("field"), [60, 90, 200, 300, 400, 500, 600, 800], key=keep("mhz"), on_change=save("mhz"))
     with c_c:
-        if nucleus == "1H":
+        if nucleus == "1H" and A is not None:
             st.toggle(T("show_integral"), key=keep("integral"), on_change=save("integral"))
-    signals = nmr.predict_h(A.mol) if nucleus == "1H" else nmr.predict_c(A.mol)
-    x, y = nmr.spectrum_h(signals, KEEP["mhz"]) if nucleus == "1H" else nmr.spectrum_c(signals)
-    sim = [go.Scatter(x=x, y=y, name=f"{T('nmr_sim')} {'¹H' if nucleus == '1H' else '¹³C'}", line=dict(color=SIM, width=1.3))]
-    if nucleus == "1H" and KEEP["integral"] and signals:
+    predict = (lambda m: nmr.predict_h(m)) if nucleus == "1H" else (lambda m: nmr.predict_c(m))
+    spec = (lambda sg: nmr.spectrum_h(sg, KEEP["mhz"])) if nucleus == "1H" else nmr.spectrum_c
+    series, signals = [], []
+    if A is not None:
+        signals = predict(A.mol)
+        x, y = spec(signals)
+        series.append(Series(f"{T('nmr_sim')} {'¹H' if nucleus == '1H' else '¹³C'}", x, y, "sim", SIM))
+    series += ref_series(lambda an: spec(predict(an.mol)))
+    for k, (nm, ux, uy) in enumerate(user_series("nmr")):
+        series.append(Series(nm, ux, uy, "user", USER_COLORS[k % 6]))
+    st.caption(T("nmr_exp_note"))
+    fig = build_fig(series, T("shift"), T("rel_int").replace(" (%)", ""), reverse_x=True)
+    kw = {"row": 1, "col": 1} if fig._stacked else {}
+    if A is not None and nucleus == "1H" and KEEP["integral"] and signals:
         order = np.argsort(-x)
         cum = np.cumsum(y[order]) / max(np.sum(y), 1e-9)
-        sim.append(go.Scatter(x=x[order], y=0.25 + 0.7 * cum, name=T("integral_curve"), line=dict(color="#16a34a", width=1.2, dash="dot")))
-    exp_tr = [go.Scatter(x=ux, y=uy, name=nm, line=dict(color=USER_COLORS[k % 6], width=1.2)) for k, (nm, ux, uy) in enumerate(user_series("nmr"))]
-    st.caption(T("nmr_exp_note"))
-    fig = stacked_or_overlay(sim, exp_tr, T("shift"), T("rel_int").replace(" (%)", ""), reverse_x=True)
-    if show_labels:
-        sub = {} if overlay or not exp_tr else {"row": 1, "col": 1}
+        fig.add_trace(go.Scatter(x=x[order], y=0.25 + 0.7 * cum, name=T("integral_curve"), line=dict(color="#16a34a", width=1.2, dash="dot")), **kw)
+    if show_labels and A is not None:
         for sgn in signals:
             yv = float(np.interp(sgn.shift, x, y))
-            fig.add_annotation(x=sgn.shift, y=min(yv, 1.0), text=f"<b>{sgn.label}</b>", showarrow=False, yshift=12, font=dict(size=12, color=SIM), **sub)
-    show_chart(fig, "nmr_" + nucleus, (-0.5, 13) if nucleus == "1H" else (-5, 230), (-0.03, 1.15), reverse=True)
+            fig.add_annotation(x=sgn.shift, y=min(yv, 1.0), text=f"<b>{sgn.label}</b>", showarrow=False, yshift=12, font=dict(size=12, color=SIM), **kw)
+    rows = mark_peaks(fig, series, "nmr", "{:.2f}" if nucleus == "1H" else "{:.1f}", unit=" ppm")
+    show_chart(fig, "nmr_" + nucleus, (-0.5, 13) if nucleus == "1H" else (-5, 230), (-0.03, 1.15), reverse=True, rows=rows)
 
-    left, right = st.columns([1, 1.6], gap="large")
-    with left:
-        mol = Chem.Mol(A.mol)
-        for sgn in signals:
-            for i in sgn.atoms:
-                mol.GetAtomWithIdx(i).SetProp("atomNote", sgn.label)
-        d2 = rdMolDraw2D.MolDraw2DCairo(480, 380)
-        d2.drawOptions().annotationFontScale = 0.9
-        d2.DrawMolecule(mol)
-        d2.FinishDrawing()
-        st.image(d2.GetDrawingText(), use_container_width=True)
-    with right:
-        if nucleus == "1H":
-            rows = [(s_.label, f"{s_.shift:.2f}", s_.n, s_.mult + (f" (J ≈ {s_.J:.0f} Hz)" if s_.mult not in ("s", "br s", "m") else ""), L(s_.desc)) for s_ in signals]
-            df = pd.DataFrame(rows, columns=[T("signal"), T("shift"), T("integral"), T("mult"), T("type")])
-        else:
-            rows = [(s_.label, f"{s_.shift:.1f}", s_.n, s_.mult, L(s_.desc)) for s_ in signals]
-            df = pd.DataFrame(rows, columns=[T("signal"), T("shift"), T("n_c"), "DEPT", T("type")])
-        st.dataframe(df, hide_index=True, use_container_width=True)
-        st.caption(T("solvent_note"))
-    download(pd.DataFrame({"ppm": x[::10], "intensity": y[::10]}), f"nmr_{nucleus}_simulated.csv")
+    if A is not None:
+        left, right = st.columns([1, 1.6], gap="large")
+        with left:
+            mol = Chem.Mol(A.mol)
+            for sgn in signals:
+                for i in sgn.atoms:
+                    mol.GetAtomWithIdx(i).SetProp("atomNote", sgn.label)
+            d2 = rdMolDraw2D.MolDraw2DCairo(480, 380)
+            d2.drawOptions().annotationFontScale = 0.9
+            d2.DrawMolecule(mol)
+            d2.FinishDrawing()
+            st.image(d2.GetDrawingText(), use_container_width=True)
+        with right:
+            if nucleus == "1H":
+                rows_t = [(s_.label, f"{s_.shift:.2f}", s_.n, s_.mult + (f" (J ≈ {s_.J:.0f} Hz)" if s_.mult not in ("s", "br s", "m") else ""), L(s_.desc)) for s_ in signals]
+                df = pd.DataFrame(rows_t, columns=[T("signal"), T("shift"), T("integral"), T("mult"), T("type")])
+            else:
+                rows_t = [(s_.label, f"{s_.shift:.1f}", s_.n, s_.mult, L(s_.desc)) for s_ in signals]
+                df = pd.DataFrame(rows_t, columns=[T("signal"), T("shift"), T("n_c"), "DEPT", T("type")])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+            st.caption(T("solvent_note"))
+        download(pd.DataFrame({"ppm": x[::10], "intensity": y[::10]}), f"nmr_{nucleus}_simulated.csv")
 
 # ---------------------------------------------------------------------------
 # Compound information and nomenclature
 # ---------------------------------------------------------------------------
+elif section == "info" and A is None:
+    st.markdown(f"#### {default_title()}")
+    st.info(T("no_info_extract"))
+    if REFS:
+        st.dataframe(pd.DataFrame([(lab, an.formula, f"{an.mw:.2f}", f"{an.exact_mass:.4f}", f"{an.dbe:g}", an.smiles) for lab, an in REFS],
+                                  columns=[T("compound"), T("formula"), T("molar_mass"), T("exact_mass"), T("dbe"), "SMILES"]),
+                     hide_index=True, use_container_width=True)
+    else:
+        st.caption(T("no_refs"))
+
 elif section == "info":
     m = A.mol
     left, right = st.columns(2, gap="large")

@@ -22,6 +22,11 @@ the structure, the drawing, uploaded files, axis ranges or any other setting.
   type a SMILES / InChI / Molfile, or pick one of the built-in class examples.
   The structure on screen is kept when you switch between these modes, so you can look a compound
   up by name and then edit it in the drawing editor.
+- **Extract / sample mode:** a blank mode with no compound, for plotting your own instrument data, such as
+  plant extracts or mixtures of several compounds. Give the extract a name and it becomes the chart title.
+  For structure elucidation you can overlay **simulated reference compounds** (by name or SMILES), drawn as
+  dashed lines in every spectrum type. An example extract export is in
+  [`examples/uv_extract_example.csv`](examples/uv_extract_example.csv).
 - **Compound sheet:** IUPAC name, common name and synonyms (PubChem), identifiers (formula, SMILES, InChI,
   InChIKey, CID, CAS), functional groups, general properties (molar and exact mass, degrees of unsaturation,
   rings, logP, molar refractivity, TPSA, H-bond donors/acceptors, rotatable bonds, sp³ fraction, stereocentres,
@@ -44,6 +49,11 @@ the structure, the drawing, uploaded files, axis ranges or any other setting.
   several files and several Y columns can be shown at once. For UV-Vis, enter the concentration to convert
   absorbance to ε (Beer-Lambert), or leave it at 0 to compare band shapes. An example export is in
   [`examples/uv_acetophenone_example.csv`](examples/uv_acetophenone_example.csv).
+- **Peak and λmax marking:** automatic peak picking (by prominence) on the simulated, NIST, uploaded and
+  reference spectra, with the strongest UV-Vis band labelled λmax, IR bands as minima of transmittance, and a
+  downloadable peak table. You choose which series are marked, how many peaks are marked and the minimum prominence.
+- **Presentation-quality charts:** custom title, font size, line width, height, grid, legend position, and export
+  as PNG, SVG or JPEG at 3× resolution from the camera icon.
 - **Interactive charts:** zoom with the mouse wheel or a box, pan, double-click to reset, set exact axis ranges,
   and save any chart as PNG.
 - Every simulated spectrum can be exported as CSV.
@@ -94,7 +104,7 @@ spectra/simulate.py    IR / UV-Vis / EI-MS simulation engine (RDKit)
 spectra/databases.py   PubChem and NIST WebBook clients, JCAMP-DX reader
 spectra/nmr.py         ¹H / ¹³C NMR prediction (additive increments)
 spectra/i18n.py        Spanish / English interface text and label translation
-examples/              Example instrument export for testing the upload
+examples/              Example instrument exports (pure compound and a multi-compound extract)
 launcher/              Desktop launcher, shortcut installer and app icon (PNG / ICO / ICNS)
 ```
 

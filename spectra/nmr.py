@@ -89,7 +89,6 @@ def _substituent(ring_atom: Chem.Atom, s: Chem.Atom) -> str:
 
 def _aromatic_increments(mol, idx, dmat, which):
     """Sum of substituent increments acting on aromatic atom idx (which=0 for ¹H, 1 for ¹³C)."""
-    atom = mol.GetAtomWithIdx(idx)
     ring_atoms = set()
     for r in mol.GetRingInfo().AtomRings():
         if idx in r and all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in r):
