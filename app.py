@@ -15,6 +15,7 @@ the language or the entry mode never loses information.
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import io
 import re
@@ -228,18 +229,7 @@ if mode == "name":
     if KEEP["not_found"]:
         sb.error(T("not_found", q=KEEP["not_found"]))
 elif mode == "draw":
-    try:
-        from streamlit_ketcher import st_ketcher
-        sb.info(T("draw_hint"))
-        with st.expander(T("editor"), expanded=True):
-            drawn = st_ketcher(KEEP["current"], height=430, key="ketcher")
-        if drawn and drawn != KEEP["drawn"]:
-            KEEP["drawn"] = drawn
-            if drawn != KEEP["current"]:
-                KEEP["current"] = drawn
-                st.rerun()
-    except ImportError:
-        sb.error(T("no_ketcher"))
+    sb.info(T("draw_hint"))
 elif mode == "smiles":
     with sb.form("smiles_form", border=False):
         st.text_area(T("smiles_input"), key=keep("smiles_text"), height=110)
@@ -250,6 +240,25 @@ elif mode == "extract":
 else:
     idx = 0 if KEEP["lang"] == "es" else 1
     sb.selectbox(T("compound"), range(len(EXAMPLES)), format_func=lambda i: EXAMPLES[i][idx], key=keep("example"), on_change=on_example)
+
+# Structure editor: available in every input mode (except extract), loaded with the current structure,
+# so a searched, typed or example compound can be modified directly and simulated with "Apply".
+if mode != "extract":
+    try:
+        from streamlit_ketcher import st_ketcher
+        with st.expander(T("editor"), expanded=(mode == "draw")):
+            st.caption(T("draw_hint"))
+            # the key follows the structure: Ketcher only reads its molecule when it is created,
+            # so a new key reloads the editor whenever the compound changes (search, example, SMILES)
+            ed_key = "ketcher_" + hashlib.md5(KEEP["current"].encode()).hexdigest()[:10]
+            drawn = st_ketcher(KEEP["current"], height=430, key=ed_key)
+        if drawn and drawn != KEEP["drawn"]:
+            KEEP["drawn"] = drawn
+            if drawn != KEEP["current"]:
+                KEEP["current"] = drawn
+                st.rerun()
+    except ImportError:
+        sb.error(T("no_ketcher"))
 
 with sb.expander(f"{T('refs')} ({len(KEEP['refs'])})", expanded=mode == "extract"):
     st.caption(T("refs_help"))
