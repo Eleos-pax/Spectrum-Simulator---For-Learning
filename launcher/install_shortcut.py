@@ -32,7 +32,7 @@ foreach ($dir in $targets) {{
   $lnk.TargetPath = '{q(bat)}'
   $lnk.WorkingDirectory = '{q(ROOT)}'
   $lnk.IconLocation = '{q(HERE / "icon.ico")},0'
-  $lnk.WindowStyle = 7
+  $lnk.WindowStyle = 1
   $lnk.Description = 'UV-Vis, IR, MS and NMR spectrum simulator'
   $lnk.Save()
   $up = $s.CreateShortcut((Join-Path $dir 'Actualizar {NAME}.lnk'))

@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 venv/
 .streamlit/secrets.toml
+launcher/launch.log
+launcher/.launch.lock
